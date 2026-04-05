@@ -7,10 +7,11 @@ It is structured as follows:
 LIPPEN/
 ├── chipyard/           # Chipyard v1.8.0 (git submodule)
 ├── llvm-project/       # LLVM llvmorg-18.1.6 (git submodule)
+├── llvm_tests/         # Test binaries for LLVM-based evaluation
 ├── patches/
 │   ├── chipyard.patch      # Modifications to Chipyard (configs, RoCC accelerators, vsrc, tests)
 │   ├── rocket-chip.patch   # Modifications to rocket-chip (Configs.scala, LazyRoCC.scala)
-│   └── llvm.patch          # Modifications to LLVM (RISCV backend, custom passes, test binaries)
+│   └── llvm.patch          # Modifications to LLVM (RISCV backend, custom passes)
 └── README.md
 ```
 ---
@@ -143,10 +144,16 @@ cd ../..
 ### 6d. Compile the test binaries
 
 ```bash
-cd llvm-project/LIPPEN_tests
-make
+cd llvm_tests
+make LLVM_CONFIG=/path/to/LIPPEN/llvm-project/build/bin/llvm-config
 ```
 
-This produces `test.linux.riscv` in the `LIPPEN_tests/` directory, which can be copied to the FPGA board and run directly on Linux.
+Replace `/path/to/LIPPEN` with the absolute path to your cloned repository. For example:
+
+```bash
+make LLVM_CONFIG=$(pwd)/../llvm-project/build/bin/llvm-config
+```
+
+This produces test binaries (e.g. `test.linux.riscv`) in the `llvm_tests/` directory, which can be copied to the FPGA board and run directly on Linux.
 
 ---
