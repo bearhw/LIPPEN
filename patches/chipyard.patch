@@ -23712,7 +23712,7 @@ index 00000000..48a71950
 +}
 \ No newline at end of file
 diff --git a/tests/Makefile b/tests/Makefile
-index 54959bf0..b7e76c73 100644
+index 54959bf0..d4c776cb 100644
 --- a/tests/Makefile
 +++ b/tests/Makefile
 @@ -5,8 +5,7 @@ LDFLAGS= -static
@@ -23721,7 +23721,7 @@ index 54959bf0..b7e76c73 100644
  
 -PROGRAMS = pwm blkdev accum charcount nic-loopback big-blkdev pingd \
 -           streaming-passthrough streaming-fir nvdla spiflashread spiflashwrite fft gcd
-+PROGRAMS = prince_data_counter_bench_unrolled
++PROGRAMS = foo_bar_prince
  
  spiflash.img: spiflash.py
  	python3 $<
