@@ -2,12 +2,7 @@
 // test_returns_only.c
 // RISC-V microbenchmark: return-only overhead (recursive calls with timing around returns)
 //
-// Build two versions:
-//   - unprotected: PAC pass disabled
-//   - protected:   PAC pass enabled
-//
-// Run on your RISC-V platform:
-//   test_returns_only.riscv [depth] [trials]
+// modify line 90-91, depth-trial, variables if needed
 //
 // Output reports cycles/return using rdcycle.
 

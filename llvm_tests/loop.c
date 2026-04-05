@@ -1,13 +1,7 @@
 
-// test.c
-// RISC-V microbenchmark: return-address protection overhead (via your LLVM MachineFunction pass)
 //
-// Build two versions using your Makefile by swapping LLVM/opt/pass settings:
-//   - unprotected: pass disabled
-//   - protected:   pass enabled
-//
-// Run on your platform:
-//   test.llvm.riscv [iters] [trials]
+// 2 leaf functions with different sizes are available. 
+// you can use the leaf/leaf2 function in line 74 and 83
 //
 // Output reports cycles/(call+ret) using rdcycle.
 
@@ -15,9 +9,6 @@
 #include <stdio.h>
 #include <stdlib.h>
 
-// Serialize a bit around timing.
-// fence rw,rw orders memory ops; fence.i helps keep I-side effects stable for self-modifying code
-// (not needed here, but harmless). You can drop fence.i if you prefer.
 static inline void fence_all(void) {
     __asm__ __volatile__("fence rw, rw; fence.i" ::: "memory");
 }
@@ -28,7 +19,6 @@ static inline uint64_t rdcycle64(void) {
     __asm__ __volatile__("rdcycle %0" : "=r"(x));
     return x;
 #else
-    // RV32 safe pattern (unlikely for your setup, but included for completeness).
     uint32_t hi0, lo, hi1;
     __asm__ __volatile__("rdcycleh %0" : "=r"(hi0));
     __asm__ __volatile__("rdcycle  %0" : "=r"(lo));
@@ -50,20 +40,19 @@ static double median_cyc_per_iter(uint64_t *samples_cyc, int n, uint64_t iters) 
     return (double)samples_cyc[n/2] / (double)iters;
 }
 
-// Keep a volatile dependency so compiler can’t collapse the loop.
 static volatile uint64_t sink = 1;
 
-// This is the hot call target. Your MachineFunction pass should instrument the return address here.
 // noinline ensures an actual call/return.
 // The local volatile array forces a real stack frame so RA save/restore behavior is exercised.
-// __attribute__((noinline)) static uint64_t leaf(uint64_t x) {
-//     volatile uint64_t tmp[2];
-//     tmp[0] = x ^ 0x9e3779b97f4a7c15ULL;
-//     tmp[1] = tmp[0] + (uint64_t)(uintptr_t)&tmp;
+__attribute__((noinline)) static uint64_t leaf2(uint64_t x) {
+    volatile uint64_t tmp[2];
+    tmp[0] = x ^ 0x9e3779b97f4a7c15ULL;
+    tmp[1] = tmp[0] + (uint64_t)(uintptr_t)&tmp;
 
-//     sink ^= tmp[1];
-//     return sink;
-// }
+    sink ^= tmp[1];
+    return sink;
+}
+
 __attribute__((noinline)) static uint64_t leaf(uint64_t x) {
     volatile uint64_t tmp[2];
     tmp[0] = x ^ (x-5);

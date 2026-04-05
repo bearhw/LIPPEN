@@ -1,13 +1,7 @@
 
-// test_recursive.c
-// RISC-V microbenchmark: recursive return-address protection overhead
 //
-// Usage:
-//   test.llvm.riscv [iters] [trials] [depth]
-//
-// Example:
-//   ./test.llvm.riscv 200000000 7 8
-//   ./test.llvm.riscv 200000000 7 16
+// 2 leaf functions with different sizes are available. 
+// you can use the leaf_recursive/leaf_recursive2 function in line 99 and 109
 //
 // Output reports cycles/(top-level call+ret).
 // Each iteration performs `depth` nested calls internally.
@@ -54,7 +48,7 @@ static volatile uint64_t sink = 1;
 // - volatile local array forces stack frame
 // - depth controls recursion depth
 __attribute__((noinline))
-static uint64_t leaf_recursive(uint64_t x, int depth) {
+static uint64_t leaf_recursive2(uint64_t x, int depth) {
     volatile uint64_t tmp[2];
 
     tmp[0] = x ^ 0x9e3779b97f4a7c15ULL;
@@ -64,6 +58,20 @@ static uint64_t leaf_recursive(uint64_t x, int depth) {
 
     if (depth > 0) {
         // Prevent tail-call elimination by using result afterward
+        uint64_t r = leaf_recursive2(sink, depth - 1);
+        sink ^= r;
+        return sink;
+    }
+
+    return sink;
+}
+
+__attribute__((noinline))
+static uint64_t leaf_recursive(uint64_t x, int depth) {
+    volatile uint64_t tmp[2];
+    sink = x ^ (x-5);
+
+    if (depth > 0) {
         uint64_t r = leaf_recursive(sink, depth - 1);
         sink ^= r;
         return sink;
@@ -71,19 +79,6 @@ static uint64_t leaf_recursive(uint64_t x, int depth) {
 
     return sink;
 }
-// __attribute__((noinline))
-// static uint64_t leaf_recursive(uint64_t x, int depth) {
-//     volatile uint64_t tmp[2];
-//     sink = x ^ (x-5);
-
-//     if (depth > 0) {
-//         uint64_t r = leaf_recursive(sink, depth - 1);
-//         sink ^= r;
-//         return sink;
-//     }
-
-//     return sink;
-// }
 
 int main(int argc, char **argv) {
     uint64_t iters  = (argc > 1) ? strtoull(argv[1], 0, 0) : 20000000ULL;

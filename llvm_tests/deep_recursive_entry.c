@@ -2,12 +2,7 @@
 // test_entries_only.c
 // RISC-V microbenchmark: PAC entry (signing) overhead - times only function prologues
 //
-// Build two versions:
-//   - unprotected: PAC pass disabled
-//   - protected:   PAC pass enabled (signs return address in prologue)
-//
-// Run on your RISC-V platform:
-//   test_entries_only.riscv [depth] [trials]
+// modify line 98-99, depth-trial, variables if needed
 //
 // Output reports cycles/entry using rdcycle.
 
@@ -95,7 +90,7 @@ static int cmp_u64(const void *a, const void *b) {
 }
 
 int main(int argc, char **argv) {
-    int depth   = (argc > 1) ? atoi(argv[1]) : 4096;
+    int depth   = (argc > 1) ? atoi(argv[1]) : 4096;  
     int trials  = (argc > 2) ? atoi(argv[2]) : 11;
 
     if (depth < 1) depth = 1;
