@@ -3568,21 +3568,11 @@ index 000000000000..9fa34bf85b3e
 +
 diff --git a/llvm/lib/Transforms/RoccPacLite/CMakeLists.txt b/llvm/lib/Transforms/RoccPacLite/CMakeLists.txt
 new file mode 100644
-index 000000000000..fe03abaef392
+index 000000000000..7951b09d0a06
 --- /dev/null
 +++ b/llvm/lib/Transforms/RoccPacLite/CMakeLists.txt
-@@ -0,0 +1,25 @@
-+# BEFORE (what you likely have)
-+# add_llvm_component_library(RoccPac
-+#   RoccPacReturnPass.cpp
-+#   LINK_COMPONENTS
-+#     Core
-+#     Passes
-+#     Support
-+# )
-+
-+# AFTER (note the LLVM prefix on the target name)
-+add_llvm_component_library(LLVMRoccPac
+@@ -0,0 +1,15 @@
++add_llvm_component_library(LLVMRoccPacLite
 +  RoccPacReturnLitePass.cpp
 +  LINK_COMPONENTS
 +    Core
@@ -3590,13 +3580,14 @@ index 000000000000..fe03abaef392
 +    Support
 +)
 +
-+# (Optional) keep the plugin too if you want the .so:
-+add_llvm_pass_plugin(RoccPacReturnPass
++add_dependencies(LLVMRoccPacLite intrinsics_gen)
++
++add_llvm_pass_plugin(RoccPacReturnLitePass
 +  RoccPacReturnLitePass.cpp
 +)
 +
-+
-+
++add_dependencies(RoccPacReturnLitePass intrinsics_gen)
+\ No newline at end of file
 diff --git a/llvm/lib/Transforms/RoccPacLite/RoccPacReturnLitePass.cpp b/llvm/lib/Transforms/RoccPacLite/RoccPacReturnLitePass.cpp
 new file mode 100644
 index 000000000000..65d83e002684
