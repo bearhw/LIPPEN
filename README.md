@@ -22,14 +22,11 @@ LIPPEN/
 
 ### Hardware
 - **RTL Simulation:** A Linux workstation with at least 16 GB RAM and 100 GB free disk space
-- **FPGA:** Xilinx VCU118 board with Vivado 2021.1 or later installed
 
 ### Software
 - Ubuntu 20.04 or 22.04 (recommended)
 - Git ≥ 2.25
 - Conda (Miniconda or Anaconda)
-- Java 11 (`sudo apt install default-jdk`)
-- Vivado 2021.1+ (for FPGA only)
 
 ### Estimated Setup Time
 | Step | Time |
