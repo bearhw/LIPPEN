@@ -38,7 +38,7 @@ LIPPEN/
 | Chipyard submodule init | ~10–20 minutes |
 | riscv-tools toolchain build | ~2–4 hours |
 | RTL simulation | ~30–60 minutes per test |
-| FPGA bitstream generation | ~4–6 hours |
+
 
 ---
 
@@ -124,6 +124,7 @@ cd ..
 ```bash
 cd chipyard/sims/verilator
 make CONFIG=MyRoCCSimConfig
+cd ../../..
 ```
 
 ### 5b. Compile the test binary
@@ -131,6 +132,7 @@ make CONFIG=MyRoCCSimConfig
 ```bash
 cd chipyard/tests
 make
+cd ../..
 ```
 
 This produces `foo_bar_prince.riscv` in the `tests/` directory.
