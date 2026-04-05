@@ -1,0 +1,1863 @@
+diff --git a/llvm/lib/Target/RISCV/CMakeLists.txt b/llvm/lib/Target/RISCV/CMakeLists.txt
+index ac88cd49db4e..27e22596a3c6 100644
+--- a/llvm/lib/Target/RISCV/CMakeLists.txt
++++ b/llvm/lib/Target/RISCV/CMakeLists.txt
+@@ -28,6 +28,8 @@ tablegen(LLVM RISCVGenPostLegalizeGICombiner.inc -gen-global-isel-combiner
+ add_public_tablegen_target(RISCVCommonTableGen)
+ 
+ add_llvm_target(RISCVCodeGen
++  MIRSetRAPass.cpp
++  RISCVRoccPacReturn.cpp 
+   RISCVAsmPrinter.cpp
+   RISCVCodeGenPrepare.cpp
+   RISCVDeadRegisterDefinitions.cpp
+diff --git a/llvm/lib/Target/RISCV/MIRSetRAPass.cpp b/llvm/lib/Target/RISCV/MIRSetRAPass.cpp
+new file mode 100644
+index 000000000000..1d4d7824b51c
+--- /dev/null
++++ b/llvm/lib/Target/RISCV/MIRSetRAPass.cpp
+@@ -0,0 +1,210 @@
++//===-- MIRSetRAPass.cpp ----------------------------------------*- C++ -*-===//
++//
++// RISC-V MIR pass: before a function returns, load RA from a per-function,
++// TU-local shadow global: __pac_ra_shadow$<Function>.
++//
++// Constraints:
++//   - Runs post-PEI (wire in RISCVPassConfig::addPreEmitPass2()).
++//   - DO NOT create new vregs (use physical scratch t0 = X5).
++//   - Emit real LUI+ADDI with %hi/%lo (no %pcrel_* pairing needed).
++//   - RV64 only (we emit LD).
++//
++// Exposes:
++//   • New-PM key: "mir-set-ra"   (llc --passes=mir-set-ra ...)
++//   • Legacy factory: createMIRSetRAPass() (for RISCVPassConfig)
++//
++//===----------------------------------------------------------------------===//
++
++#include "RISCV.h"
++#include "RISCVInstrInfo.h"
++#include "RISCVRegisterInfo.h"
++#include "RISCVSubtarget.h"
++#include "MCTargetDesc/RISCVBaseInfo.h"
++
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/CodeGen/MachineBasicBlock.h"
++#include "llvm/CodeGen/MachineFunction.h"
++#include "llvm/CodeGen/MachineInstrBuilder.h"
++#include "llvm/CodeGen/MachinePassManager.h"     // New-PM MFPM
++#include "llvm/CodeGen/MachineFunctionPass.h"    // Legacy shim
++#include "llvm/IR/Function.h"
++#include "llvm/IR/GlobalVariable.h"
++#include "llvm/IR/Module.h"
++#include "llvm/Pass.h"                           // INITIALIZE_PASS
++#include "llvm/Passes/PassBuilder.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/raw_ostream.h"
++
++#define DEBUG_TYPE "mir-set-ra"
++
++using namespace llvm;
++
++namespace {
++
++// -------------------------------------------------------------------
++// Helpers / core transform
++// -------------------------------------------------------------------
++
++static bool isReturnMI(const MachineInstr &MI) {
++  const unsigned Opc = MI.getOpcode();
++
++  // Most common at isel time: PseudoRET
++  if (Opc == RISCV::PseudoRET)
++    return true;
++
++  // Fallback: canonical JALR x0, x1, 0
++  if (Opc == RISCV::JALR) {
++    if (MI.getNumOperands() >= 3 &&
++        MI.getOperand(0).isReg() && MI.getOperand(1).isReg() &&
++        MI.getOperand(2).isImm()) {
++      const Register RD  = MI.getOperand(0).getReg();
++      const Register RS1 = MI.getOperand(1).getReg();
++      const int64_t Off  = MI.getOperand(2).getImm();
++      return RD == RISCV::X0 && RS1 == RISCV::X1 && Off == 0;
++    }
++  }
++  return false;
++}
++
++// Insert our load *after* any prior 'ld ra, off(sp)' in the same block.
++static MachineBasicBlock::iterator
++chooseInsertionPoint(MachineBasicBlock &MBB,
++                     MachineBasicBlock::iterator RetIt) {
++  MachineBasicBlock::iterator InsertIt = RetIt;
++  if (RetIt == MBB.begin())
++    return InsertIt;
++
++  for (auto I = std::prev(RetIt); /* stop inside */; --I) {
++    if (I->definesRegister(RISCV::X1)) {
++      InsertIt = std::next(I);
++      break;
++    }
++    if (I == MBB.begin())
++      break;
++  }
++  return InsertIt;
++}
++
++// Core transformation shared by New-PM and legacy shim.
++static bool setRAFromShadow(MachineFunction &MF) {
++  const Function &F = MF.getFunction();
++  const Module *M   = F.getParent();
++  const RISCVSubtarget &STI = MF.getSubtarget<RISCVSubtarget>();
++  const RISCVInstrInfo *TII = STI.getInstrInfo();
++
++  if (!M || !STI.is64Bit())
++    return false; // We emit LD (RV64).
++
++  // TU-local per-function shadow (created by your IR pass).
++  const std::string GVName = ("__pac_ra_shadow$" + F.getName()).str();
++  const GlobalVariable *Shadow =
++      M->getGlobalVariable(GVName, /*AllowInternal=*/true);
++  if (!Shadow) {
++    LLVM_DEBUG(dbgs() << "[mir-set-ra] no shadow for " << F.getName() << "\n");
++    return false;
++  }
++
++  bool Changed = false;
++
++  for (MachineBasicBlock &MBB : MF) {
++    for (auto I = MBB.begin(), E = MBB.end(); I != E; ++I) {
++      MachineInstr &MI = *I;
++      if (!isReturnMI(MI))
++        continue;
++
++      DebugLoc DL = MI.getDebugLoc();
++      auto InsertPt = chooseInsertionPoint(MBB, I);
++
++      // Physical scratch register (t0 = X5) — safe right before ret.
++      Register Tmp = RISCV::X5;
++
++      // LUI Tmp, %hi(__pac_ra_shadow$F)
++      BuildMI(MBB, InsertPt, DL, TII->get(RISCV::LUI), Tmp)
++          .addGlobalAddress(const_cast<GlobalVariable *>(Shadow), 0,
++                            RISCVII::MO_HI);
++
++      // ADDI Tmp, Tmp, %lo(__pac_ra_shadow$F)
++      BuildMI(MBB, InsertPt, DL, TII->get(RISCV::ADDI), Tmp)
++          .addReg(Tmp)
++          .addGlobalAddress(const_cast<GlobalVariable *>(Shadow), 0,
++                            RISCVII::MO_LO);
++
++      // LD ra, 0(Tmp)
++      BuildMI(MBB, InsertPt, DL, TII->get(RISCV::LD), RISCV::X1 /* ra */)
++          .addReg(Tmp)
++          .addImm(0);
++
++      LLVM_DEBUG(dbgs() << "[mir-set-ra] injected LUI/ADDI(%hi/%lo)/LD in "
++                        << F.getName() << "\n");
++      errs() << "[mir-set-ra] patched return in " << F.getName() << "\n";
++      Changed = true;
++    }
++  }
++
++  return Changed;
++}
++
++// -------------------------------------------------------------------
++// New-PM wrapper (for: llc --passes=mir-set-ra ...)
++// -------------------------------------------------------------------
++
++struct MIRSetRAPassNewPM : PassInfoMixin<MIRSetRAPassNewPM> {
++  PreservedAnalyses run(MachineFunction &MF,
++                        MachineFunctionAnalysisManager &) {
++    errs() << "[mir-set-ra] (new-PM) running on " << MF.getName() << "\n";
++    bool Changed = setRAFromShadow(MF);
++    return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
++  }
++};
++
++} // end anonymous namespace
++
++// New-PM registration: pipeline key "mir-set-ra".
++namespace llvm {
++void registerMirSetRAPassCallbacks(PassBuilder &PB) {
++  PB.registerPipelineParsingCallback(
++      [](StringRef Name, MachineFunctionPassManager &MFPM) {
++        if (Name == "mir-set-ra") {
++          MFPM.addPass(::MIRSetRAPassNewPM());
++          return true;
++        }
++        return false;
++      });
++}
++} // namespace llvm
++
++// -------------------------------------------------------------------
++// Legacy shim + factory (so RISCVPassConfig can schedule this pass)
++// -------------------------------------------------------------------
++
++namespace {
++
++struct MIRSetRAPassLegacy : MachineFunctionPass {
++  static char ID;
++  MIRSetRAPassLegacy() : MachineFunctionPass(ID) {}
++
++  StringRef getPassName() const override {
++    return "RISC-V: set RA from __pac_ra_shadow$<F> (legacy shim)";
++  }
++
++  bool runOnMachineFunction(MachineFunction &MF) override {
++    return setRAFromShadow(MF);
++  }
++};
++
++char MIRSetRAPassLegacy::ID = 0;
++
++} // end anonymous namespace
++
++// Older branches require INITIALIZE_PASS at global scope.
++INITIALIZE_PASS(MIRSetRAPassLegacy,
++                "mir-set-ra",
++                "RISC-V: set RA from __pac_ra_shadow$<F> (legacy shim)",
++                false, // CFGOnly
++                false  // isAnalysis
++)
++
++namespace llvm {
++// Factory used by RISCVPassConfig (declared in RISCV.h)
++FunctionPass *createMIRSetRAPass() { return new MIRSetRAPassLegacy(); }
++} // namespace llvm
+diff --git a/llvm/lib/Target/RISCV/RISCV.h b/llvm/lib/Target/RISCV/RISCV.h
+index 9eb18099894b..2efa13bf2e4f 100644
+--- a/llvm/lib/Target/RISCV/RISCV.h
++++ b/llvm/lib/Target/RISCV/RISCV.h
+@@ -95,6 +95,11 @@ void initializeRISCVO0PreLegalizerCombinerPass(PassRegistry &);
+ 
+ FunctionPass *createRISCVPreLegalizerCombiner();
+ void initializeRISCVPreLegalizerCombinerPass(PassRegistry &);
++
++FunctionPass *createMIRSetRAPass();
++void initializeMIRSetRAPassLegacyPass(PassRegistry&);
++
++FunctionPass *createRoccPacReturnMFPass();
+ } // namespace llvm
+ 
+ #endif
+diff --git a/llvm/lib/Target/RISCV/RISCVInstrInfo.td b/llvm/lib/Target/RISCV/RISCVInstrInfo.td
+index 114329c2c7c5..1e8e8faacbf9 100644
+--- a/llvm/lib/Target/RISCV/RISCVInstrInfo.td
++++ b/llvm/lib/Target/RISCV/RISCVInstrInfo.td
+@@ -2134,6 +2134,32 @@ def : Pat<(shl (zext GPR:$rs), uimm5:$shamt),
+           (SRLI (SLLI GPR:$rs, 32), (ImmSubFrom32 uimm5:$shamt))>;
+ }
+ 
++// Custom-1 opcode (CUSTOM_1 = 0b0101011)
++let Namespace = "RISCV", hasSideEffects = 0, mayLoad = 0, mayStore = 0 in {
++  // rd = prince_sign(rs1 = plaintext, rs2 = modifier)
++  def ROCC_PRINCE_SIGN
++    : RVInstR<0b0000001,                 // funct7 = 1
++              0b111,                     // funct3 = {xd,xs1,xs2} = 111
++              OPC_CUSTOM_1,              // opcode = 0b0101011
++              (outs GPR:$rd),            // rd
++              (ins GPR:$rs1, GPR:$rs2),  // rs1, rs2
++              "rocc_prince_sign",        // asm mnemonic
++              "$rd, $rs1, $rs2">;        // asm operand format
++  
++  // rd = prince_auth(rs1 = ciphertext, rs2 = modifier)
++  def ROCC_PRINCE_AUTH
++    : RVInstR<0b0000000,                 // funct7 = 0
++              0b111,                     // funct3 = 111
++              OPC_CUSTOM_1,              // opcode = 0b0101011
++              (outs GPR:$rd),
++              (ins GPR:$rs1, GPR:$rs2),
++              "rocc_prince_auth",        // asm mnemonic
++              "$rd, $rs1, $rs2">;        // asm operand format
++}
++
++
++
++
+ //===----------------------------------------------------------------------===//
+ // Standard extensions
+ //===----------------------------------------------------------------------===//
+diff --git a/llvm/lib/Target/RISCV/RISCVRoccPacReturn.cpp b/llvm/lib/Target/RISCV/RISCVRoccPacReturn.cpp
+new file mode 100644
+index 000000000000..d85fbae5de29
+--- /dev/null
++++ b/llvm/lib/Target/RISCV/RISCVRoccPacReturn.cpp
+@@ -0,0 +1,477 @@
++
++#include "RISCV.h"
++#include "RISCVSubtarget.h"
++#include "RISCVRegisterInfo.h"
++#include "llvm/CodeGen/MachineFunction.h"
++#include "llvm/CodeGen/MachineFunctionPass.h"
++#include "llvm/CodeGen/MachineInstrBuilder.h"
++#include "llvm/Support/Debug.h"
++#include "llvm/Support/raw_ostream.h"
++#include <set>
++
++using namespace llvm;
++
++#define DEBUG_TYPE "riscv-rocc-pac-ra"
++
++namespace {
++class RoccPacReturnMFPass : public MachineFunctionPass {
++private:
++  // Track which functions we've already instrumented
++  std::set<const MachineFunction*> InstrumentedFunctions;
++  
++public:
++  static char ID;
++  
++  RoccPacReturnMFPass() : MachineFunctionPass(ID) {}
++  
++  StringRef getPassName() const override {
++    return "RISC-V ROCC PAC Return (MachineFunction)";
++  }
++  
++  bool runOnMachineFunction(MachineFunction &MF) override {
++    StringRef Name = MF.getName();
++    if (Name.startswith("prince_") ||
++        Name.startswith("pac_")) {
++      return false;
++    }
++    // Guard: Check if already processed
++    if (InstrumentedFunctions.count(&MF)) {
++      errs() << "GUARD: Skipping already instrumented function: " << MF.getName() << "\n";
++      return false;
++    }
++    
++    errs() << "========================================\n";
++    errs() << "RoccPacReturnMFPass running on: " << MF.getName() << "\n";
++    
++    const RISCVSubtarget &STI = MF.getSubtarget<RISCVSubtarget>();
++    const RISCVInstrInfo *TII = STI.getInstrInfo();
++    
++    if (!STI.is64Bit())
++      return false;
++    
++    bool Changed = false;
++    const unsigned RAReg = RISCV::X1; // ra
++    const unsigned SPReg = RISCV::X0; // sp
++    
++    // --- Check if already instrumented by looking for our instructions ---
++    MachineBasicBlock &EntryMBB = MF.front();
++    for (auto &MI : EntryMBB) {
++      if (MI.getOpcode() == RISCV::ROCC_PRINCE_SIGN) {
++        errs() << "WARNING: Function " << MF.getName() 
++               << " already has ROCC_PRINCE_SIGN! Skipping.\n";
++        errs() << "========================================\n\n";
++        return false;
++      }
++    }
++    
++    // --- 1) Sign RA IMMEDIATELY AFTER the first SP adjustment ---
++    auto InsertPt = EntryMBB.begin();
++    bool FoundSPAdjust = false;
++    
++    while (InsertPt != EntryMBB.end()) {
++      // Look for: addi sp, sp, <offset>
++      // This includes both regular ADDI and compressed C.ADDI16SP
++      if ((InsertPt->getOpcode() == RISCV::ADDI || 
++           InsertPt->getOpcode() == RISCV::C_ADDI16SP) &&
++          InsertPt->getNumOperands() >= 3 &&
++          InsertPt->getOperand(0).isReg() && 
++          InsertPt->getOperand(0).getReg() == RISCV::X2 &&
++          InsertPt->getOperand(1).isReg() &&
++          InsertPt->getOperand(1).getReg() == RISCV::X2) {
++        
++        // Found SP adjustment! Insert IMMEDIATELY after
++        ++InsertPt;
++        FoundSPAdjust = true;
++        
++        errs() << "  Found SP adjustment, inserting SIGN immediately after\n";
++        break;
++      }
++      ++InsertPt;
++    }
++    
++    if (!FoundSPAdjust) {
++      // No stack adjustment found - function might be a leaf with no frame
++      errs() << "  No SP adjustment found, skipping function\n";
++      errs() << "========================================\n\n";
++      return false;
++    }
++    
++    DebugLoc DL;
++    if (InsertPt != EntryMBB.end())
++      DL = InsertPt->getDebugLoc();
++    else if (InsertPt != EntryMBB.begin())
++      DL = std::prev(InsertPt)->getDebugLoc();
++    
++    errs() << "Inserting ROCC_PRINCE_SIGN at entry (after SP adjust)\n";
++    
++    // ra := prince_sign(ra, sp)
++    // SP now has its adjusted value
++    BuildMI(EntryMBB, InsertPt, DL, TII->get(RISCV::ROCC_PRINCE_SIGN))
++        .addReg(RAReg, RegState::Define)
++        .addReg(RAReg)
++        .addReg(SPReg);
++    Changed = true;
++    
++    // --- 2) Authenticate RA IMMEDIATELY BEFORE SP restoration ---
++    int returnCount = 0;
++    
++    for (auto &MBB : MF) {
++      for (auto MI = MBB.begin(), ME = MBB.end(); MI != ME; ++MI) {
++        if (!MI->isReturn())
++          continue;
++        
++        returnCount++;
++        
++        // Walk backwards from return to find the SP restoration
++        auto SearchPt = MI;
++        bool FoundSPRestore = false;
++        
++        while (SearchPt != MBB.begin()) {
++          --SearchPt;
++          
++          // Look for: addi sp, sp, <positive offset>
++          // This is the epilogue restoring the stack
++          if ((SearchPt->getOpcode() == RISCV::ADDI ||
++               SearchPt->getOpcode() == RISCV::C_ADDI16SP) &&
++              SearchPt->getNumOperands() >= 3 &&
++              SearchPt->getOperand(0).isReg() && 
++              SearchPt->getOperand(0).getReg() == RISCV::X2 &&
++              SearchPt->getOperand(1).isReg() &&
++              SearchPt->getOperand(1).getReg() == RISCV::X2) {
++            
++            // Found SP restoration! Insert BEFORE this instruction
++            FoundSPRestore = true;
++            
++            errs() << "  Found SP restoration before return #" << returnCount 
++                   << ", inserting AUTH immediately before\n";
++            break;
++          }
++        }
++        
++        if (!FoundSPRestore) {
++          // No SP restoration found - might be a tail call or unusual epilogue
++          errs() << "  WARNING: No SP restoration found for return #" << returnCount 
++                 << ", skipping AUTH\n";
++          continue;
++        }
++        
++        DebugLoc RDL = SearchPt->getDebugLoc();
++        
++        errs() << "Inserting ROCC_PRINCE_AUTH before return #" << returnCount 
++               << " (before SP restore)\n";
++        
++        // ra := prince_auth(ra, sp)
++        // SP still has its adjusted value (before restoration)
++        BuildMI(MBB, SearchPt, RDL, TII->get(RISCV::ROCC_PRINCE_AUTH))
++            .addReg(RAReg, RegState::Define)
++            .addReg(RAReg)
++            .addReg(SPReg);
++        Changed = true;
++      }
++    }
++    
++    errs() << "Total returns found: " << returnCount << "\n";
++    errs() << "========================================\n\n";
++    
++    // Mark as instrumented
++    InstrumentedFunctions.insert(&MF);
++    
++    return Changed;
++  }
++};
++} // end anonymous namespace
++
++char RoccPacReturnMFPass::ID = 0;
++
++FunctionPass *llvm::createRoccPacReturnMFPass() {
++  return new RoccPacReturnMFPass();
++}
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// /////data pointer pass. naming is bad
++// #include "RISCV.h"
++// #include "RISCVSubtarget.h"
++// #include "RISCVRegisterInfo.h"
++// #include "llvm/CodeGen/MachineFunction.h"
++// #include "llvm/CodeGen/MachineFunctionPass.h"
++// #include "llvm/CodeGen/MachineInstrBuilder.h"
++// #include "llvm/Support/Debug.h"
++// #include "llvm/Support/raw_ostream.h"
++// #include <set>
++
++// using namespace llvm;
++
++// #define DEBUG_TYPE "riscv-rocc-pac-data-ptr"
++
++// namespace {
++// class RoccPacReturnMFPass : public MachineFunctionPass {
++// private:
++//   // Track which functions we've already instrumented
++//   std::set<const MachineFunction*> InstrumentedFunctions;
++  
++//   // Helper: Check if instruction is a load operation
++//   bool isLoadInstr(const MachineInstr &MI) const {
++//     unsigned Opc = MI.getOpcode();
++//     return Opc == RISCV::LD || Opc == RISCV::LW || Opc == RISCV::LH || 
++//            Opc == RISCV::LB || Opc == RISCV::LWU || Opc == RISCV::LHU || 
++//            Opc == RISCV::LBU ||
++//            // Compressed loads
++//            Opc == RISCV::C_LD || Opc == RISCV::C_LW || 
++//            Opc == RISCV::C_LDSP || Opc == RISCV::C_LWSP;
++//   }
++  
++//   // Helper: Check if instruction is a store operation
++//   bool isStoreInstr(const MachineInstr &MI) const {
++//     unsigned Opc = MI.getOpcode();
++//     return Opc == RISCV::SD || Opc == RISCV::SW || Opc == RISCV::SH || 
++//            Opc == RISCV::SB ||
++//            // Compressed stores
++//            Opc == RISCV::C_SD || Opc == RISCV::C_SW ||
++//            Opc == RISCV::C_SDSP || Opc == RISCV::C_SWSP;
++//   }
++  
++//   // Helper: Check if this is a pointer load (loading a pointer value, not dereferencing)
++//   // We want to protect: current = ptr->next (loading a pointer)
++//   // We DON'T want to protect: val = ptr->data (loading an integer)
++//   bool isPointerLoad(const MachineInstr &MI) const {
++//     if (!isLoadInstr(MI))
++//       return false;
++    
++//     // Only protect loads where we're loading a POINTER value
++//     // Heuristic: If the loaded value is used as a base for another load/store,
++//     // it's likely a pointer. For simplicity, we'll protect ALL loads from
++//     // non-stack memory and let the user refine based on results.
++//     // 
++//     // Better approach: Only protect loads where offset is 8 (loading 'next' field)
++//     // since in our test, pointers are at offset 8 in the Node structure
++    
++//     if (MI.getNumOperands() >= 3 && MI.getOperand(2).isImm()) {
++//       int64_t Offset = MI.getOperand(2).getImm();
++//       // Offset 8 is typically the 'next' pointer field in our Node struct
++//       // Offset 0 is the 'data' field
++//       if (Offset == 8) {
++//         return true;  // This is loading a pointer field
++//       }
++//     }
++    
++//     return false;
++//   }
++  
++//   // Helper: Check if this is a pointer store (storing a pointer value)
++//   bool isPointerStore(const MachineInstr &MI) const {
++//     if (!isStoreInstr(MI))
++//       return false;
++    
++//     // Only protect stores where we're storing a POINTER value
++//     // Same heuristic: offset 8 is the 'next' field
++//     if (MI.getNumOperands() >= 3 && MI.getOperand(2).isImm()) {
++//       int64_t Offset = MI.getOperand(2).getImm();
++//       if (Offset == 8) {
++//         return true;  // This is storing to a pointer field
++//       }
++//     }
++    
++//     return false;
++//   }
++  
++//   // Helper: Get base register from load/store instruction
++//   // Returns 0 if not applicable or if it's SP (we skip SP-based accesses)
++//   unsigned getBaseRegister(const MachineInstr &MI) const {
++//     // Format: LD rd, offset(rs1) -> operands: rd, rs1, offset
++//     // Format: SD rs2, offset(rs1) -> operands: rs2, rs1, offset
++    
++//     if (isLoadInstr(MI)) {
++//       if (MI.getNumOperands() >= 2 && MI.getOperand(1).isReg()) {
++//         unsigned BaseReg = MI.getOperand(1).getReg();
++//         // Skip stack pointer accesses - these are typically safe
++//         if (BaseReg == RISCV::X2) // SP
++//           return 0;
++//         return BaseReg;
++//       }
++//     } else if (isStoreInstr(MI)) {
++//       if (MI.getNumOperands() >= 2 && MI.getOperand(1).isReg()) {
++//         unsigned BaseReg = MI.getOperand(1).getReg();
++//         // Skip stack pointer accesses
++//         if (BaseReg == RISCV::X2) // SP
++//           return 0;
++//         return BaseReg;
++//       }
++//     }
++//     return 0;
++//   }
++  
++// public:
++//   static char ID;
++  
++//   RoccPacReturnMFPass() : MachineFunctionPass(ID) {}
++  
++//   StringRef getPassName() const override {
++//     return "RISC-V ROCC PAC Data Pointer Protection";
++//   }
++  
++//   bool runOnMachineFunction(MachineFunction &MF) override {
++//     // Guard: Check if already processed
++//     if (InstrumentedFunctions.count(&MF)) {
++//       errs() << "GUARD: Skipping already instrumented function: " << MF.getName() << "\n";
++//       return false;
++//     }
++    
++//     errs() << "========================================\n";
++//     errs() << "RoccPacDataPointerPass running on: " << MF.getName() << "\n";
++    
++//     const RISCVSubtarget &STI = MF.getSubtarget<RISCVSubtarget>();
++//     const RISCVInstrInfo *TII = STI.getInstrInfo();
++    
++//     if (!STI.is64Bit()) {
++//       errs() << "  Skipping: Not 64-bit RISC-V\n";
++//       errs() << "========================================\n\n";
++//       return false;
++//     }
++    
++//     bool Changed = false;
++//     const unsigned ContextReg = RISCV::X0; // Use zero register as constant context
++//                                             // This ensures same context across all functions
++    
++//     int loadCount = 0;
++//     int storeCount = 0;
++//     int authenticatedLoads = 0;
++//     int signedStores = 0;
++    
++//     // Iterate through all basic blocks
++//     for (auto &MBB : MF) {
++//       // We need to be careful with iterator invalidation
++//       // Collect instructions to instrument first, then instrument them
++//       SmallVector<MachineInstr*, 16> LoadsToAuth;
++//       SmallVector<MachineInstr*, 16> StoresToSign;
++      
++//       for (auto &MI : MBB) {
++//         if (isPointerLoad(MI)) {  // Only pointer loads, not data loads!
++//           loadCount++;
++//           unsigned BaseReg = getBaseRegister(MI);
++//           if (BaseReg != 0) {
++//             LoadsToAuth.push_back(&MI);
++//           }
++//         } else if (isPointerStore(MI)) {  // Only pointer stores, not data stores!
++//           storeCount++;
++//           unsigned BaseReg = getBaseRegister(MI);
++//           if (BaseReg != 0) {
++//             StoresToSign.push_back(&MI);
++//           }
++//         }
++//       }
++      
++//       // Now instrument the loads (authenticate pointer AFTER loading it)
++//       for (auto *MI : LoadsToAuth) {
++//         unsigned BaseReg = getBaseRegister(*MI);
++//         if (BaseReg == 0) continue;
++        
++//         // Get the destination register (where the pointer is loaded into)
++//         if (!MI->getOperand(0).isReg()) continue;
++//         unsigned DestReg = MI->getOperand(0).getReg();
++        
++//         DebugLoc DL = MI->getDebugLoc();
++        
++//         errs() << "  Loading pointer into reg " << DestReg 
++//                << " from base reg " << BaseReg << " at " << *MI;
++        
++//         // Insert authentication AFTER the load
++//         // The loaded value is encrypted, we need to decrypt it
++//         auto InsertPt = std::next(MachineBasicBlock::iterator(MI));
++        
++//         errs() << "  Authenticating loaded pointer value (reg " << DestReg << ")\n";
++        
++//         // loaded_ptr := prince_auth(loaded_ptr, zero)
++//         // This decrypts the loaded pointer value
++//         BuildMI(MBB, InsertPt, DL, TII->get(RISCV::ROCC_PRINCE_AUTH))
++//             .addReg(DestReg, RegState::Define)
++//             .addReg(DestReg)
++//             .addReg(ContextReg);
++        
++//         authenticatedLoads++;
++//         Changed = true;
++//       }
++      
++//       // Now instrument the stores (sign pointer value before storing)
++//       for (auto *MI : StoresToSign) {
++//         unsigned BaseReg = getBaseRegister(*MI);
++//         if (BaseReg == 0) continue;
++        
++//         // Get the source register (the pointer value being stored)
++//         if (!MI->getOperand(0).isReg()) continue;
++//         unsigned SrcReg = MI->getOperand(0).getReg();
++        
++//         DebugLoc DL = MI->getDebugLoc();
++        
++//         errs() << "  Storing pointer from reg " << SrcReg
++//                << " to base reg " << BaseReg << " at " << *MI;
++        
++//         errs() << "  Signing pointer value (reg " << SrcReg << ") before STORE\n";
++        
++//         // Insert signing BEFORE the store
++//         // ptr_to_store := prince_sign(ptr_to_store, zero)
++//         // This encrypts the pointer value before storing
++//         BuildMI(MBB, MI, DL, TII->get(RISCV::ROCC_PRINCE_SIGN))
++//             .addReg(SrcReg, RegState::Define)
++//             .addReg(SrcReg)
++//             .addReg(ContextReg);
++        
++//         signedStores++;
++//         Changed = true;
++//       }
++//     }
++    
++//     errs() << "Statistics:\n";
++//     errs() << "  Total loads found: " << loadCount << "\n";
++//     errs() << "  Total stores found: " << storeCount << "\n";
++//     errs() << "  Loads authenticated: " << authenticatedLoads << "\n";
++//     errs() << "  Stores signed: " << signedStores << "\n";
++//     errs() << "========================================\n\n";
++    
++//     // Mark as instrumented
++//     if (Changed) {
++//       InstrumentedFunctions.insert(&MF);
++//     }
++    
++//     return Changed;
++//   }
++// };
++// } // end anonymous namespace
++
++// char RoccPacReturnMFPass::ID = 0;
++
++// FunctionPass *llvm::createRoccPacReturnMFPass() {
++//   return new RoccPacReturnMFPass();
++// }
+\ No newline at end of file
+diff --git a/llvm/lib/Target/RISCV/RISCVTargetMachine.cpp b/llvm/lib/Target/RISCV/RISCVTargetMachine.cpp
+index 2285c99d7901..17a1b51bf616 100644
+--- a/llvm/lib/Target/RISCV/RISCVTargetMachine.cpp
++++ b/llvm/lib/Target/RISCV/RISCVTargetMachine.cpp
+@@ -101,10 +101,16 @@ static cl::opt<bool> EnableMISchedLoadClustering(
+     cl::desc("Enable load clustering in the machine scheduler"),
+     cl::init(false));
+ 
++// namespace llvm {
++//   FunctionPass *createMIRRoccPacRetPass();
++//   void initializeMIRRoccPacRetPassPass(PassRegistry &);
++// }
++
+ extern "C" LLVM_EXTERNAL_VISIBILITY void LLVMInitializeRISCVTarget() {
+   RegisterTargetMachine<RISCVTargetMachine> X(getTheRISCV32Target());
+   RegisterTargetMachine<RISCVTargetMachine> Y(getTheRISCV64Target());
+   auto *PR = PassRegistry::getPassRegistry();
++  // initializeMIRRoccPacRetPassPass(*PR);
+   initializeGlobalISel(*PR);
+   initializeRISCVO0PreLegalizerCombinerPass(*PR);
+   initializeRISCVPreLegalizerCombinerPass(*PR);
+@@ -518,8 +524,7 @@ void RISCVPassConfig::addPreSched2() {
+ 
+ void RISCVPassConfig::addPreEmitPass() {
+   addPass(&BranchRelaxationPassID);
+-  addPass(createRISCVMakeCompressibleOptPass());
+-
++  addPass(createRISCVMakeCompressibleOptPass());  
+   // TODO: It would potentially be better to schedule copy propagation after
+   // expanding pseudos (in addPreEmitPass2). However, performing copy
+   // propagation after the machine outliner (which runs after addPreEmitPass)
+@@ -533,10 +538,13 @@ void RISCVPassConfig::addPreEmitPass() {
+ void RISCVPassConfig::addPreEmitPass2() {
+   if (TM->getOptLevel() != CodeGenOptLevel::None) {
+     addPass(createRISCVMoveMergePass());
++    addPass(createRoccPacReturnMFPass());
+     // Schedule PushPop Optimization before expansion of Pseudo instruction,
+     // ensuring return instruction is detected correctly.
+     addPass(createRISCVPushPopOptimizationPass());
+   }
++  initializeMIRSetRAPassLegacyPass(*llvm::PassRegistry::getPassRegistry());
++  addPass(createMIRSetRAPass());
+   addPass(createRISCVExpandPseudoPass());
+ 
+   // Schedule the expansion of AMOs at the last possible moment, avoiding the
+diff --git a/llvm/lib/Transforms/CMakeLists.txt b/llvm/lib/Transforms/CMakeLists.txt
+index 84a7e34147d0..e67c9c7db761 100644
+--- a/llvm/lib/Transforms/CMakeLists.txt
++++ b/llvm/lib/Transforms/CMakeLists.txt
+@@ -10,3 +10,4 @@ add_subdirectory(ObjCARC)
+ add_subdirectory(Coroutines)
+ add_subdirectory(CFGuard)
+ add_subdirectory(HipStdPar)
++add_subdirectory(RoccPac)
+diff --git a/llvm/lib/Transforms/RoccPac/CMakeLists.txt b/llvm/lib/Transforms/RoccPac/CMakeLists.txt
+new file mode 100644
+index 000000000000..44ebe1991c3e
+--- /dev/null
++++ b/llvm/lib/Transforms/RoccPac/CMakeLists.txt
+@@ -0,0 +1,25 @@
++# BEFORE (what you likely have)
++# add_llvm_component_library(RoccPac
++#   RoccPacReturnPass.cpp
++#   LINK_COMPONENTS
++#     Core
++#     Passes
++#     Support
++# )
++
++# AFTER (note the LLVM prefix on the target name)
++add_llvm_component_library(LLVMRoccPac
++  RoccPacReturnPass.cpp
++  LINK_COMPONENTS
++    Core
++    Passes
++    Support
++)
++
++# (Optional) keep the plugin too if you want the .so:
++add_llvm_pass_plugin(RoccPacReturnPass
++  RoccPacReturnPass.cpp
++)
++
++
++
+diff --git a/llvm/lib/Transforms/RoccPac/RoccPacReturnPass.cpp b/llvm/lib/Transforms/RoccPac/RoccPacReturnPass.cpp
+new file mode 100644
+index 000000000000..9fa34bf85b3e
+--- /dev/null
++++ b/llvm/lib/Transforms/RoccPac/RoccPacReturnPass.cpp
+@@ -0,0 +1,716 @@
++// RoccPacReturnPass.cpp — LLVM 18+, new-PM, MODULE pass (key: "rocc-pac")
++// Target: RISC-V RV64 only
++// For each defined function F:
++//   Entry:   read SP; RA := returnaddress(0); Signed := prince_sign(RA, SP)
++//   Each ret: Auth := prince_auth(Signed, SP); store volatile Auth -> __pac_ra_shadow$<F>
++
++
++
++
++//light version of modifier as a seperate register
++
++
++// #include "llvm/ADT/SmallVector.h"
++// #include "llvm/IR/BasicBlock.h"
++// #include "llvm/IR/Constants.h"
++// #include "llvm/IR/DerivedTypes.h"
++// #include "llvm/IR/Function.h"
++// #include "llvm/IR/IRBuilder.h"
++// #include "llvm/IR/InstrTypes.h"
++// #include "llvm/IR/Instructions.h"
++// #include "llvm/IR/InlineAsm.h"
++// #include "llvm/IR/IntrinsicInst.h"
++// #include "llvm/IR/Intrinsics.h"
++// #include "llvm/IR/LLVMContext.h"
++// #include "llvm/IR/Module.h"
++// #include "llvm/IR/PassManager.h"
++// #include "llvm/IR/Type.h"
++// #include "llvm/Passes/PassBuilder.h"
++// #include "llvm/Passes/PassPlugin.h"
++// #include "llvm/Support/raw_ostream.h"
++// #include "llvm/TargetParser/Triple.h"
++
++// using namespace llvm;
++
++// static Function *getIntrinsicMaybeOverloaded(Module &M,
++//                                              Intrinsic::ID Id,
++//                                              Type *OL = nullptr) {
++//   if (Intrinsic::isOverloaded(Id)) {
++//     SmallVector<Type *, 1> Tys;
++//     if (OL) Tys.push_back(OL);
++//     return Intrinsic::getDeclaration(&M, Id, Tys);
++//   }
++//   return Intrinsic::getDeclaration(&M, Id);
++// }
++
++// namespace {
++
++// struct RoccPacReturnPass : PassInfoMixin<RoccPacReturnPass> {
++//   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
++//     // Only RV64.
++//     Triple TT(M.getTargetTriple());
++//     if (!TT.isRISCV() || M.getDataLayout().getPointerSizeInBits(0) != 64)
++//       return PreservedAnalyses::all();
++
++//     LLVMContext &Ctx = M.getContext();
++//     Type *I32   = Type::getInt32Ty(Ctx);
++//     Type *I64   = Type::getInt64Ty(Ctx);
++//     Type *PtrTy = PointerType::get(Ctx, 0); // opaque ptr, AS0
++
++//     // Hooks (externs unless provided here).
++//     // Sign/auth take (i64 addr, i64 modifier). We'll pass modifier = SP.
++//     FunctionCallee PrinceSign =
++//         M.getOrInsertFunction("prince_sign",
++//                               FunctionType::get(I64, {I64, I64}, false));
++//     FunctionCallee PrinceAuth =
++//         M.getOrInsertFunction("prince_auth",
++//                               FunctionType::get(I64, {I64, I64}, false));
++
++//     // returnaddress intrinsic
++//     Function *RetAddr = getIntrinsicMaybeOverloaded(
++//         M, Intrinsic::returnaddress, PtrTy);
++
++//     // Inline asm to read the stack pointer in the *current function*:
++//     //
++//     //   mv dest, sp
++//     //
++//     // This produces an i64 containing the architectural SP.
++//     FunctionType *SPAsmTy = FunctionType::get(I64, /*isVarArg=*/false);
++//     InlineAsm *ReadSPAsm =
++//         InlineAsm::get(SPAsmTy, "mv $0, sp", "=r", /*hasSideEffects=*/false);
++
++//     bool Changed = false;
++
++//     for (Function &F : M) {
++//       if (F.isDeclaration())
++//         continue;
++
++//       // Skip our hooks to avoid recursion, and anything in the pac runtime.
++//       StringRef N = F.getName();
++//       if (N.startswith("prince_sign") || N.startswith("prince_auth") ||
++//           N.startswith("pac_set_key") || N.startswith("__pac_"))
++//         continue;
++
++//       // Collect rets.
++//       SmallVector<ReturnInst *, 8> Rets;
++//       for (BasicBlock &BB : F)
++//         if (auto *RI = dyn_cast<ReturnInst>(BB.getTerminator()))
++//           Rets.push_back(RI);
++//       if (Rets.empty())
++//         continue;
++
++//       // Entry insertion point.
++//       Instruction *IP =
++//           F.getEntryBlock().getFirstNonPHIOrDbgOrLifetime();
++//       IRBuilder<> BE(IP);
++
++//       // RA := returnaddress(0)
++//       Value *Level0 = ConstantInt::get(I32, 0);
++//       Value *RAptr  = BE.CreateCall(RetAddr, {Level0}, "ra.ptr");
++//       Value *RAi64  = BE.CreatePtrToInt(RAptr, I64, "ra.i64");
++
++//       // SP := current stack pointer in this function
++//       Value *SPi64  = BE.CreateCall(ReadSPAsm, {}, "sp.i64");
++
++//       // Signed := prince_sign(RA, SP)
++//       // Keep Signed and SP in SSA so all returns can reuse them.
++//       Value *Signed =
++//           BE.CreateCall(PrinceSign, {RAi64, SPi64}, "pac.ra.signed");
++
++//       // Each ret: prince_auth(Signed, SP)
++//       for (ReturnInst *RI : Rets) {
++//         IRBuilder<> BR(RI);
++//         (void)BR.CreateCall(PrinceAuth, {Signed, SPi64}, "pac.ra.authed");
++//         // No store, no compare — truly minimal
++//       }
++
++//       Changed = true;
++//     }
++
++//     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
++//   }
++// };
++
++// } // namespace
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// modifier coming from x2 register
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/Constants.h"
++#include "llvm/IR/DerivedTypes.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/IRBuilder.h"
++#include "llvm/IR/InstrTypes.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/IR/IntrinsicInst.h"
++#include "llvm/IR/Intrinsics.h"
++#include "llvm/IR/LLVMContext.h"
++#include "llvm/IR/Metadata.h"
++#include "llvm/IR/Module.h"
++#include "llvm/IR/PassManager.h"
++#include "llvm/IR/Type.h"
++#include "llvm/Passes/PassBuilder.h"
++#include "llvm/Passes/PassPlugin.h"
++#include "llvm/Support/raw_ostream.h"
++#include "llvm/TargetParser/Triple.h"
++
++using namespace llvm;
++
++static Function *getIntrinsicMaybeOverloaded(Module &M,
++                                             Intrinsic::ID Id,
++                                             Type *OL = nullptr) {
++  if (Intrinsic::isOverloaded(Id)) {
++    SmallVector<Type *, 1> Tys;
++    if (OL)
++      Tys.push_back(OL);
++    return Intrinsic::getDeclaration(&M, Id, Tys);
++  }
++  return Intrinsic::getDeclaration(&M, Id);
++}
++
++namespace {
++
++struct RoccPacReturnPass : PassInfoMixin<RoccPacReturnPass> {
++  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
++    // Only RV64.
++    Triple TT(M.getTargetTriple());
++    if (!TT.isRISCV() || M.getDataLayout().getPointerSizeInBits(0) != 64)
++      return PreservedAnalyses::all();
++
++    LLVMContext &Ctx = M.getContext();
++    Type *I32   = Type::getInt32Ty(Ctx);
++    Type *I64   = Type::getInt64Ty(Ctx);
++    Type *PtrTy = PointerType::get(Ctx, 0); // opaque ptr, AS0
++
++    // Hooks (externs unless provided here).
++    // Sign/auth take (i64 addr, i64 modifier). We'll pass modifier = SP value.
++    FunctionCallee PrinceSign =
++        M.getOrInsertFunction("prince_sign",
++                              FunctionType::get(I64, {I64, I64}, false));
++    FunctionCallee PrinceAuth =
++        M.getOrInsertFunction("prince_auth",
++                              FunctionType::get(I64, {I64, I64}, false));
++
++    // returnaddress intrinsic
++    Function *RetAddr =
++        getIntrinsicMaybeOverloaded(M, Intrinsic::returnaddress, PtrTy);
++
++    // read_register intrinsic for i64 (to read SP / x2)
++    Function *ReadReg =
++        getIntrinsicMaybeOverloaded(M, Intrinsic::read_register, I64);
++
++    bool Changed = false;
++
++    for (Function &F : M) {
++      if (F.isDeclaration())
++        continue;
++
++      // Skip our hooks to avoid recursion, and anything in the pac runtime.
++      StringRef N = F.getName();
++      if (N.startswith("prince_sign") || N.startswith("prince_auth") ||
++          N.startswith("pac_set_key") || N.startswith("__pac_"))
++        continue;
++
++      // Collect rets.
++      SmallVector<ReturnInst *, 8> Rets;
++      for (BasicBlock &BB : F)
++        if (auto *RI = dyn_cast<ReturnInst>(BB.getTerminator()))
++          Rets.push_back(RI);
++      if (Rets.empty())
++        continue;
++
++      // Entry: RA := returnaddress(0); Signed := prince_sign(RA, sp)
++      Instruction *IP =
++          F.getEntryBlock().getFirstNonPHIOrDbgOrLifetime();
++      IRBuilder<> BE(IP);
++
++      // returnaddress(0) -> i64
++      Value *Level0 = ConstantInt::get(I32, 0);
++      Value *RAptr  = BE.CreateCall(RetAddr, {Level0}, "ra.ptr");
++      Value *RAi64  = BE.CreatePtrToInt(RAptr, I64, "ra.i64");
++
++      // Read the hardware stack pointer (x2 == sp) as modifier:
++      //   llvm.read_register.i64(metadata !{!"sp"})
++      MDString *SpStr = MDString::get(Ctx, "sp");
++      MDNode   *SpNode = MDNode::get(Ctx, SpStr);
++      Value    *SpMDVal = MetadataAsValue::get(Ctx, SpNode);
++
++      Value *SpVal =
++          BE.CreateCall(ReadReg, {SpMDVal}, "sp.i64");
++
++      // Keep the signed tag in SSA so we reuse it at returns.
++      // Signed := prince_sign(RA, sp)
++      Value *Signed =
++          BE.CreateCall(PrinceSign, {RAi64, SpVal}, "pac.ra.signed");
++
++      // Each ret: prince_auth(Signed, sp)
++      for (ReturnInst *RI : Rets) {
++        IRBuilder<> BR(RI);
++        (void)BR.CreateCall(PrinceAuth, {Signed, SpVal}, "pac.ra.authed");
++        // No store, no compare — truly minimal
++      }
++
++      Changed = true;
++    }
++
++    return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
++  }
++};
++
++} // namespace
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// // modifier 0 
++
++
++// #include "llvm/ADT/SmallVector.h"
++// #include "llvm/IR/BasicBlock.h"
++// #include "llvm/IR/Constants.h"
++// #include "llvm/IR/DerivedTypes.h"
++// #include "llvm/IR/Function.h"
++// #include "llvm/IR/IRBuilder.h"
++// #include "llvm/IR/InstrTypes.h"
++// #include "llvm/IR/Instructions.h"
++// #include "llvm/IR/IntrinsicInst.h"
++// #include "llvm/IR/Intrinsics.h"
++// #include "llvm/IR/LLVMContext.h"
++// #include "llvm/IR/Module.h"
++// #include "llvm/IR/PassManager.h"
++// #include "llvm/IR/Type.h"
++// #include "llvm/Passes/PassBuilder.h"
++// #include "llvm/Passes/PassPlugin.h"
++// #include "llvm/Support/raw_ostream.h"
++// #include "llvm/TargetParser/Triple.h"
++
++// using namespace llvm;
++
++// static Function *getIntrinsicMaybeOverloaded(Module &M,
++//                                              Intrinsic::ID Id,
++//                                              Type *OL = nullptr) {
++//   if (Intrinsic::isOverloaded(Id)) {
++//     SmallVector<Type *, 1> Tys;
++//     if (OL) Tys.push_back(OL);
++//     return Intrinsic::getDeclaration(&M, Id, Tys);
++//   }
++//   return Intrinsic::getDeclaration(&M, Id);
++// }
++
++// namespace {
++
++// struct RoccPacReturnPass : PassInfoMixin<RoccPacReturnPass> {
++//   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
++//     // Only RV64.
++//     Triple TT(M.getTargetTriple());
++//     if (!TT.isRISCV() || M.getDataLayout().getPointerSizeInBits(0) != 64)
++//       return PreservedAnalyses::all();
++
++//     LLVMContext &Ctx = M.getContext();
++//     Type *I32   = Type::getInt32Ty(Ctx);
++//     Type *I64   = Type::getInt64Ty(Ctx);
++//     Type *PtrTy = PointerType::get(Ctx, 0); // opaque ptr, AS0
++
++//     // Hooks (externs unless provided here).
++//     // Sign/auth take (i64 addr, i64 modifier). We'll pass modifier = 0.
++//     FunctionCallee PrinceSign =
++//         M.getOrInsertFunction("prince_sign",
++//                               FunctionType::get(I64, {I64, I64}, false));
++//     FunctionCallee PrinceAuth =
++//         M.getOrInsertFunction("prince_auth",
++//                               FunctionType::get(I64, {I64, I64}, false));
++
++//     // returnaddress intrinsic
++//     Function *RetAddr = getIntrinsicMaybeOverloaded(
++//         M, Intrinsic::returnaddress, PtrTy);
++
++//     bool Changed = false;
++
++//     for (Function &F : M) {
++//       if (F.isDeclaration()) continue;
++
++//       // Skip our hooks to avoid recursion, and anything in the pac runtime.
++//       StringRef N = F.getName();
++//       if (N.startswith("prince_sign") || N.startswith("prince_auth") ||
++//           N.startswith("pac_set_key") || N.startswith("__pac_"))
++//         continue;
++
++//       // Collect rets.
++//       SmallVector<ReturnInst *, 8> Rets;
++//       for (BasicBlock &BB : F)
++//         if (auto *RI = dyn_cast<ReturnInst>(BB.getTerminator()))
++//           Rets.push_back(RI);
++//       if (Rets.empty()) continue;
++
++//       // Entry: RA := returnaddress(0); Signed := prince_sign(RA, 0)
++//       Instruction *IP = F.getEntryBlock().getFirstNonPHIOrDbgOrLifetime();
++//       IRBuilder<> BE(IP);
++
++//       Value *Level0 = ConstantInt::get(I32, 0);
++//       Value *RAptr  = BE.CreateCall(RetAddr, {Level0}, "ra.ptr");
++//       Value *RAi64  = BE.CreatePtrToInt(RAptr, I64, "ra.i64");
++
++//       Value *ZeroMod = ConstantInt::get(I64, 0);
++//       // Keep the signed tag in SSA so we reuse it at returns.
++//       Value *Signed = BE.CreateCall(PrinceSign, {RAi64, ZeroMod}, "pac.ra.signed");
++
++//       // Each ret: prince_auth(Signed, 0)
++//       for (ReturnInst *RI : Rets) {
++//         IRBuilder<> BR(RI);
++//         (void)BR.CreateCall(PrinceAuth, {Signed, ZeroMod}, "pac.ra.authed");
++//         // No store, no compare — truly minimal
++//       }
++
++//       Changed = true;
++//     }
++
++//     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
++//   }
++// };
++
++// } // namespace
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// #include "llvm/ADT/SmallVector.h"
++// #include "llvm/IR/BasicBlock.h"
++// #include "llvm/IR/Constants.h"
++// #include "llvm/IR/DerivedTypes.h"
++// #include "llvm/IR/Function.h"
++// #include "llvm/IR/GlobalVariable.h"
++// #include "llvm/IR/IRBuilder.h"
++// #include "llvm/IR/InlineAsm.h"
++// #include "llvm/IR/Instructions.h"
++// #include "llvm/IR/IntrinsicInst.h"
++// #include "llvm/IR/Intrinsics.h"
++// #include "llvm/IR/LLVMContext.h"
++// #include "llvm/IR/Module.h"
++// #include "llvm/IR/PassManager.h"
++// #include "llvm/IR/Type.h"
++// #include "llvm/Passes/PassBuilder.h"
++// #include "llvm/Passes/PassPlugin.h"
++// #include "llvm/Support/Alignment.h"
++// #include "llvm/Support/raw_ostream.h"
++// #include "llvm/TargetParser/Triple.h"
++// #include "llvm/Transforms/Utils/ModuleUtils.h"
++
++// using namespace llvm;
++
++// // --- helpers -----------------------------------------------------------------
++
++// static GlobalVariable *defOrUpgradeI64GV(Module &M, StringRef Name) {
++//   LLVMContext &Ctx = M.getContext();
++//   Type *I64 = Type::getInt64Ty(Ctx);
++//   Constant *Init = ConstantInt::get(I64, 0);
++
++//   if (auto *G = M.getGlobalVariable(Name, /*AllowInternal=*/true)) {
++//     if (G->getValueType() != I64)
++//       G->mutateType(PointerType::get(I64, 0)); // opaque-ptr safe
++//     if (G->isDeclaration())
++//       G->setInitializer(Init);
++//     G->setLinkage(GlobalValue::InternalLinkage);
++//     G->setUnnamedAddr(GlobalValue::UnnamedAddr::Local);
++//     G->setAlignment(Align(8));
++//     return G;
++//   }
++
++//   auto *G = new GlobalVariable(
++//       M, I64, /*isConstant=*/false, GlobalValue::InternalLinkage, Init, Name,
++//       /*InsertBefore=*/nullptr, GlobalValue::NotThreadLocal,
++//       /*AddrSpace=*/0, /*isExternallyInitialized=*/false);
++//   G->setUnnamedAddr(GlobalValue::UnnamedAddr::Local);
++//   G->setAlignment(Align(8));
++//   return G;
++// }
++
++// static GlobalVariable *getOrCreateRAShadow(Function &F) {
++//   return defOrUpgradeI64GV(*F.getParent(),
++//                            ("__pac_ra_shadow$" + F.getName()).str());
++// }
++
++// // Overload-friendly intrinsic getter (opaque-ptr safe).
++// static Function *getIntrinsicMaybeOverloaded(Module &M, Intrinsic::ID Id,
++//                                              Type *OverloadTyOrNull) {
++//   if (Intrinsic::isOverloaded(Id)) {
++//     SmallVector<Type *, 1> Tys;
++//     if (OverloadTyOrNull) Tys.push_back(OverloadTyOrNull);
++//     return Intrinsic::getDeclaration(&M, Id, Tys);
++//   }
++//   return Intrinsic::getDeclaration(&M, Id);
++// }
++
++// // --- the pass ----------------------------------------------------------------
++
++// namespace {
++
++// struct RoccPacReturnPass : PassInfoMixin<RoccPacReturnPass> {
++//   PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
++//     bool Changed = false;
++
++//     // Only operate on RV64 modules.
++//     Triple TT(M.getTargetTriple());
++//     if (!TT.isRISCV() || M.getDataLayout().getPointerSizeInBits(0) != 64)
++//       return PreservedAnalyses::all();
++
++//     LLVMContext &Ctx = M.getContext();
++//     Type *I32 = Type::getInt32Ty(Ctx);
++//     Type *I64 = Type::getInt64Ty(Ctx);
++//     Type *PtrTy = PointerType::get(Ctx, 0); // opaque ptr, AS0
++
++//     // Hooks (extern declarations if not defined here).
++//     FunctionCallee PrinceSign =
++//         M.getOrInsertFunction("prince_sign",
++//                               FunctionType::get(I64, {I64, I64}, false));
++//     FunctionCallee PrinceAuth =
++//         M.getOrInsertFunction("prince_auth",
++//                               FunctionType::get(I64, {I64, I64}, false));
++
++//     // returnaddress intrinsic
++//     Function *RetAddr =
++//         getIntrinsicMaybeOverloaded(M, Intrinsic::returnaddress, PtrTy);
++
++//     for (Function &F : M) {
++//       if (F.isDeclaration()) continue;
++
++//       // Skip artifacts/hooks to avoid cycles.
++//       StringRef N = F.getName();
++//       if (N.starts_with("__pac_ra_shadow$")
++//           || N.equals("pac_set_key_early")
++//           || N.starts_with("prince_sign")
++//           || N.starts_with("prince_auth"))
++//         continue;
++
++//       // Collect returns.
++//       SmallVector<ReturnInst *, 8> Returns;
++//       for (BasicBlock &BB : F)
++//         if (auto *RI = dyn_cast<ReturnInst>(BB.getTerminator()))
++//           Returns.push_back(RI);
++//       if (Returns.empty()) continue;
++
++//       // Ensure TU-local shadow exists and keep it alive.
++//       GlobalVariable *RAShadow = getOrCreateRAShadow(F);
++//       appendToUsed(M, {RAShadow});
++
++//       // Entry-time: read SP; get RA; sign.
++//       Instruction *InsertPt =
++//           F.getEntryBlock().getFirstNonPHIOrDbgOrLifetime();
++//       IRBuilder<> BE(InsertPt);
++
++//       FunctionType *ReadSPTy = FunctionType::get(I64, {}, false);
++//       InlineAsm *ReadSP =
++//           InlineAsm::get(ReadSPTy, "mv $0, sp", "=r", /*SE=*/true);
++//       Value *SPVal = BE.CreateCall(ReadSP, {}, "sp.read");
++
++//       Value *Level0 = ConstantInt::get(I32, 0);
++//       Value *RAptr  = BE.CreateCall(RetAddr, {Level0}, "ra.ptr");
++//       Value *RAi64  = BE.CreatePtrToInt(RAptr, I64, "ra.i64");
++
++//       Value *Signed = BE.CreateCall(PrinceSign, {RAi64, SPVal}, "pac.ra.signed");
++
++//       // At each return: authenticate and volatile-store.
++//       for (ReturnInst *RI : Returns) {
++//         IRBuilder<> BR(RI);
++//         Value *Auth = BR.CreateCall(PrinceAuth, {Signed, SPVal}, "pac.ra.authed");
++//         auto *St = BR.CreateStore(Auth, RAShadow);
++//         St->setVolatile(true);
++//       }
++
++//       Changed = true;
++//     }
++
++//     return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
++//   }
++// };
++
++// } // end anonymous namespace
++
++// Register pipeline key "rocc-pac" as a MODULE pass.
++extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
++  return {
++    LLVM_PLUGIN_API_VERSION,
++    "RoccPacReturnPass",
++    "rv64-ra-store",
++    [](PassBuilder &PB) {
++      PB.registerPipelineParsingCallback(
++        [](StringRef Name, ModulePassManager &MPM,
++           ArrayRef<PassBuilder::PipelineElement>) {
++          if (Name == "rocc-pac") {
++            MPM.addPass(RoccPacReturnPass());
++            return true;
++          }
++          return false;
++        });
++    }
++  };
++}
++
+diff --git a/llvm/lib/Transforms/RoccPacLite/CMakeLists.txt b/llvm/lib/Transforms/RoccPacLite/CMakeLists.txt
+new file mode 100644
+index 000000000000..fe03abaef392
+--- /dev/null
++++ b/llvm/lib/Transforms/RoccPacLite/CMakeLists.txt
+@@ -0,0 +1,25 @@
++# BEFORE (what you likely have)
++# add_llvm_component_library(RoccPac
++#   RoccPacReturnPass.cpp
++#   LINK_COMPONENTS
++#     Core
++#     Passes
++#     Support
++# )
++
++# AFTER (note the LLVM prefix on the target name)
++add_llvm_component_library(LLVMRoccPac
++  RoccPacReturnLitePass.cpp
++  LINK_COMPONENTS
++    Core
++    Passes
++    Support
++)
++
++# (Optional) keep the plugin too if you want the .so:
++add_llvm_pass_plugin(RoccPacReturnPass
++  RoccPacReturnLitePass.cpp
++)
++
++
++
+diff --git a/llvm/lib/Transforms/RoccPacLite/RoccPacReturnLitePass.cpp b/llvm/lib/Transforms/RoccPacLite/RoccPacReturnLitePass.cpp
+new file mode 100644
+index 000000000000..65d83e002684
+--- /dev/null
++++ b/llvm/lib/Transforms/RoccPacLite/RoccPacReturnLitePass.cpp
+@@ -0,0 +1,129 @@
++// RoccPacReturnLitePass.cpp — LLVM 18+, new-PM, MODULE pass ("rocc-pac-lite")
++// Target: RV64 only
++// For each defined function F:
++//   Entry:   RA := returnaddress(0); Signed := prince_sign(RA, 0)
++//   Each ret:       prince_auth(Signed, 0)
++
++#include "llvm/ADT/SmallVector.h"
++#include "llvm/IR/BasicBlock.h"
++#include "llvm/IR/Constants.h"
++#include "llvm/IR/DerivedTypes.h"
++#include "llvm/IR/Function.h"
++#include "llvm/IR/IRBuilder.h"
++#include "llvm/IR/InstrTypes.h"
++#include "llvm/IR/Instructions.h"
++#include "llvm/IR/IntrinsicInst.h"
++#include "llvm/IR/Intrinsics.h"
++#include "llvm/IR/LLVMContext.h"
++#include "llvm/IR/Module.h"
++#include "llvm/IR/PassManager.h"
++#include "llvm/IR/Type.h"
++#include "llvm/Passes/PassBuilder.h"
++#include "llvm/Passes/PassPlugin.h"
++#include "llvm/Support/raw_ostream.h"
++#include "llvm/TargetParser/Triple.h"
++
++using namespace llvm;
++
++static Function *getIntrinsicMaybeOverloaded(Module &M,
++                                             Intrinsic::ID Id,
++                                             Type *OL = nullptr) {
++  if (Intrinsic::isOverloaded(Id)) {
++    SmallVector<Type *, 1> Tys;
++    if (OL) Tys.push_back(OL);
++    return Intrinsic::getDeclaration(&M, Id, Tys);
++  }
++  return Intrinsic::getDeclaration(&M, Id);
++}
++
++namespace {
++
++struct RoccPacReturnLitePass : PassInfoMixin<RoccPacReturnLitePass> {
++  PreservedAnalyses run(Module &M, ModuleAnalysisManager &) {
++    // Only RV64.
++    Triple TT(M.getTargetTriple());
++    if (!TT.isRISCV() || M.getDataLayout().getPointerSizeInBits(0) != 64)
++      return PreservedAnalyses::all();
++
++    LLVMContext &Ctx = M.getContext();
++    Type *I32   = Type::getInt32Ty(Ctx);
++    Type *I64   = Type::getInt64Ty(Ctx);
++    Type *PtrTy = PointerType::get(Ctx, 0); // opaque ptr, AS0
++
++    // Hooks (externs unless provided here).
++    // Sign/auth take (i64 addr, i64 modifier). We'll pass modifier = 0.
++    FunctionCallee PrinceSign =
++        M.getOrInsertFunction("prince_sign",
++                              FunctionType::get(I64, {I64, I64}, false));
++    FunctionCallee PrinceAuth =
++        M.getOrInsertFunction("prince_auth",
++                              FunctionType::get(I64, {I64, I64}, false));
++
++    // returnaddress intrinsic
++    Function *RetAddr = getIntrinsicMaybeOverloaded(
++        M, Intrinsic::returnaddress, PtrTy);
++
++    bool Changed = false;
++
++    for (Function &F : M) {
++      if (F.isDeclaration()) continue;
++
++      // Skip our hooks to avoid recursion, and anything in the pac runtime.
++      StringRef N = F.getName();
++      if (N.startswith("prince_sign") || N.startswith("prince_auth") ||
++          N.startswith("pac_set_key") || N.startswith("__pac_"))
++        continue;
++
++      // Collect rets.
++      SmallVector<ReturnInst *, 8> Rets;
++      for (BasicBlock &BB : F)
++        if (auto *RI = dyn_cast<ReturnInst>(BB.getTerminator()))
++          Rets.push_back(RI);
++      if (Rets.empty()) continue;
++
++      // Entry: RA := returnaddress(0); Signed := prince_sign(RA, 0)
++      Instruction *IP = F.getEntryBlock().getFirstNonPHIOrDbgOrLifetime();
++      IRBuilder<> BE(IP);
++
++      Value *Level0 = ConstantInt::get(I32, 0);
++      Value *RAptr  = BE.CreateCall(RetAddr, {Level0}, "ra.ptr");
++      Value *RAi64  = BE.CreatePtrToInt(RAptr, I64, "ra.i64");
++
++      Value *ZeroMod = ConstantInt::get(I64, 0);
++      // Keep the signed tag in SSA so we reuse it at returns.
++      Value *Signed = BE.CreateCall(PrinceSign, {RAi64, ZeroMod}, "pac.ra.signed");
++
++      // Each ret: prince_auth(Signed, 0)
++      for (ReturnInst *RI : Rets) {
++        IRBuilder<> BR(RI);
++        (void)BR.CreateCall(PrinceAuth, {Signed, ZeroMod}, "pac.ra.authed");
++        // No store, no compare — truly minimal
++      }
++
++      Changed = true;
++    }
++
++    return Changed ? PreservedAnalyses::none() : PreservedAnalyses::all();
++  }
++};
++
++} // namespace
++
++// Register as "rocc-pac-lite"
++extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
++  return {
++      LLVM_PLUGIN_API_VERSION,
++      "RoccPacReturnLitePass",
++      "rv64-ra-lite",
++      [](PassBuilder &PB) {
++        PB.registerPipelineParsingCallback(
++            [](StringRef Name, ModulePassManager &MPM,
++               ArrayRef<PassBuilder::PipelineElement>) {
++              if (Name == "rocc-pac-lite") {
++                MPM.addPass(RoccPacReturnLitePass());
++                return true;
++              }
++              return false;
++            });
++      }};
++}
+diff --git a/llvm/tools/llc/CMakeLists.txt b/llvm/tools/llc/CMakeLists.txt
+index 01825c6e4c64..4686541fb15c 100644
+--- a/llvm/tools/llc/CMakeLists.txt
++++ b/llvm/tools/llc/CMakeLists.txt
+@@ -26,10 +26,15 @@ set(LLVM_LINK_COMPONENTS
+ add_llvm_tool(llc
+   llc.cpp
+   NewPMDriver.cpp
+-
++  MIRHello.cpp   
++  # MIRSetRAPass.cpp
+   DEPENDS
+   intrinsics_gen
+   SUPPORT_PLUGINS
+   )
+ 
+ export_executable_symbols_for_plugins(llc)
++target_include_directories(llc PRIVATE
++  ${LLVM_SOURCE_DIR}/lib/Target/RISCV
++  ${LLVM_BINARY_DIR}/lib/Target/RISCV
++)
+diff --git a/llvm/tools/llc/MIRHello.cpp b/llvm/tools/llc/MIRHello.cpp
+new file mode 100644
+index 000000000000..239d4f9cacae
+--- /dev/null
++++ b/llvm/tools/llc/MIRHello.cpp
+@@ -0,0 +1,52 @@
++// MIRHello.cpp — LLVM 18 new-PM Machine IR pass (MIR level), linked into llc
++
++#include "llvm/CodeGen/MachineBasicBlock.h"
++#include "llvm/CodeGen/MachineFunction.h"
++#include "llvm/CodeGen/MachineInstr.h"
++#include "llvm/CodeGen/MachinePassManager.h"
++#include "llvm/IR/PassManager.h"
++#include "llvm/Passes/PassBuilder.h"
++#include "llvm/Passes/PassPlugin.h"
++#include "llvm/Support/raw_ostream.h"
++
++using namespace llvm;
++
++namespace {
++
++class MIRHelloPass : public PassInfoMixin<MIRHelloPass> {
++public:
++  PreservedAnalyses run(MachineFunction &MF,
++                        MachineFunctionAnalysisManager &MFAM) {
++    unsigned Instrs = 0;
++    for (auto &MBB : MF)
++      for (auto &MI : MBB)
++        ++Instrs;
++
++    errs() << "=== MIRHello: Function: " << MF.getName()
++           << "  MachineInstrs: " << Instrs << "\n";
++    return PreservedAnalyses::all(); // read-only
++  }
++};
++
++} // end anonymous namespace
++
++// Register with PassBuilder (used when linked into tools)
++namespace llvm {
++void registerMirHelloPassCallbacks(PassBuilder &PB) {
++  PB.registerPipelineParsingCallback(
++      [](StringRef Name, MachineFunctionPassManager &MPM) {
++        if (Name == "mir-hello") {
++          MPM.addPass(MIRHelloPass());
++          return true;
++        }
++        return false;
++      });
++}
++} // namespace llvm
++
++// Keep the dynamic plugin entry too (handy if you ever build a .so for opt/clang)
++extern "C" LLVM_ATTRIBUTE_WEAK PassPluginLibraryInfo llvmGetPassPluginInfo() {
++  return {LLVM_PLUGIN_API_VERSION, "MIRHello", "0.1",
++          [](PassBuilder &PB) { registerMirHelloPassCallbacks(PB); }};
++}
++
+diff --git a/llvm/tools/llc/NewPMDriver.cpp b/llvm/tools/llc/NewPMDriver.cpp
+index 13020f3dd07f..316c0b1df4c7 100644
+--- a/llvm/tools/llc/NewPMDriver.cpp
++++ b/llvm/tools/llc/NewPMDriver.cpp
+@@ -44,6 +44,11 @@
+ #include "llvm/Target/TargetOptions.h"
+ #include "llvm/Transforms/Scalar/LoopPassManager.h"
+ #include "llvm/Transforms/Utils/Cloning.h"
++#include "llvm/Passes/PassPlugin.h" // safe to include; provides PassPluginLibraryInfo
++namespace llvm {
++  void registerMirHelloPassCallbacks(PassBuilder &PB); // from MIRHello.cpp
++  // void registerMirSetRAPassCallbacks(PassBuilder &PB); // from MIRSetRAPass.cpp
++}
+ 
+ namespace llvm {
+ extern cl::opt<bool> PrintPipelinePasses;
+@@ -156,6 +161,8 @@ int llvm::compileModuleWithNewPM(
+   CGSCCAnalysisManager CGAM;
+   ModuleAnalysisManager MAM;
+   PassBuilder PB(Target.get(), PipelineTuningOptions(), std::nullopt, &PIC);
++  registerMirHelloPassCallbacks(PB);
++  // registerMirSetRAPassCallbacks(PB);
+   PB.registerModuleAnalyses(MAM);
+   PB.registerCGSCCAnalyses(CGAM);
+   PB.registerFunctionAnalyses(FAM);
+@@ -234,3 +241,4 @@ int llvm::compileModuleWithNewPM(
+ 
+   return 0;
+ }
++
+diff --git a/llvm/tools/opt/CMakeLists.txt b/llvm/tools/opt/CMakeLists.txt
+index 2cdb99e93628..d1146b18200f 100644
+--- a/llvm/tools/opt/CMakeLists.txt
++++ b/llvm/tools/opt/CMakeLists.txt
+@@ -1,4 +1,5 @@
+ set(LLVM_LINK_COMPONENTS
++  RoccPac
+   AllTargetsAsmParsers
+   AllTargetsCodeGens
+   AllTargetsDescs
+@@ -38,3 +39,4 @@ add_llvm_tool(opt
+   SUPPORT_PLUGINS
+   )
+ export_executable_symbols_for_plugins(opt)
++
