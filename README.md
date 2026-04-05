@@ -91,14 +91,6 @@ git apply ../../../patches/rocket-chip.patch
 cd ../../..
 ```
 
-### Verify patches applied cleanly
-
-```bash
-ls chipyard/generators/chipyard/src/main/scala/rocc/
-ls chipyard/generators/chipyard/src/main/resources/vsrc/
-ls chipyard/tests/
-```
-
 ---
 
 ## Step 4: Set Up the Toolchain
