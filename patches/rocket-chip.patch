@@ -1,0 +1,149 @@
+diff --git a/src/main/scala/subsystem/Configs.scala b/src/main/scala/subsystem/Configs.scala
+index c605f6cd1..035f396b2 100644
+--- a/src/main/scala/subsystem/Configs.scala
++++ b/src/main/scala/subsystem/Configs.scala
+@@ -230,6 +230,8 @@ class WithBufferlessBroadcastHub extends Config((site, here, up) => {
+   case BroadcastKey => up(BroadcastKey, site).copy(bufferless = true)
+ })
+ 
++
++
+ /**
+  * WARNING!!! IGNORE AT YOUR OWN PERIL!!!
+  *
+@@ -301,6 +303,18 @@ class WithRoccExample extends Config((site, here, up) => {
+     })
+ })
+ 
++class WithRoccPrinceV2Modifier extends Config((site, here, up) => {
++  case BuildRoCC => List(
++    (p: Parameters) => {
++        val blackbox = LazyModule(new PAPrinceV2Modifier(OpcodeSet.custom3)(p))
++        // blackjsonbox.io.currentPrivilege := io.rocc.currentPrivilege
++        blackbox
++    })
++})
++
++
++
++
+ class WithDefaultBtb extends Config((site, here, up) => {
+   case RocketTilesKey => up(RocketTilesKey, site) map { r =>
+     r.copy(btb = Some(BTBParams()))
+diff --git a/src/main/scala/tile/LazyRoCC.scala b/src/main/scala/tile/LazyRoCC.scala
+index ae36dcc59..8fb0213ec 100644
+--- a/src/main/scala/tile/LazyRoCC.scala
++++ b/src/main/scala/tile/LazyRoCC.scala
+@@ -52,6 +52,13 @@ class RoCCIO(val nPTWPorts: Int)(implicit p: Parameters) extends RoCCCoreIO()(p)
+   val fpu_req = Decoupled(new FPInput)
+   val fpu_resp = Flipped(Decoupled(new FPResult))
+ }
++//PAC-Added
++
++class PAPrinceV2Modifier(opcodes: OpcodeSet)(implicit p: Parameters) extends LazyRoCC(opcodes) {
++  override lazy val module = new PAPrinceV2ModifierImp(this)
++}
++
++
+ 
+ /** Base classes for Diplomatic TL2 RoCC units **/
+ abstract class LazyRoCC(
+@@ -382,6 +389,24 @@ class BlackBoxExampleModuleImp(outer: BlackBoxExample, blackBoxFile: String)(imp
+ 
+ }
+ 
++class PrinceCipherWrap extends BlackBox with HasBlackBoxResource {
++  val io = IO(new Bundle {
++    val clk = Input(Clock())
++    val rst = Input(Reset())
++    val d   = Input(Bool())
++    val inp = Input(UInt(64.W))
++    val key = Input(UInt(128.W))
++    val out = Output(UInt(64.W))
++  })
++
++  // Point to the Verilog file
++  //Princev2-unrolled
++  addResource("/vsrc/sbox.v")
++  addResource("/vsrc/mixt.v")
++  addResource("/vsrc/PrinceCore.v")
++  addResource("/vsrc/PrinceCipherWrap.v")
++
++}
+ class OpcodeSet(val opcodes: Seq[UInt]) {
+   def |(set: OpcodeSet) =
+     new OpcodeSet(this.opcodes ++ set.opcodes)
+@@ -418,3 +443,72 @@ class RoccCommandRouter(opcodes: Seq[OpcodeSet])(implicit p: Parameters)
+   assert(PopCount(cmdReadys) <= 1.U,
+     "Custom opcode matched for more than one accelerator")
+ }
++
++//PAC-Added
++class PAPrinceV2ModifierImp(outer: PAPrinceV2Modifier)(implicit p: Parameters) 
++  extends LazyRoCCModuleImp(outer) with HasCoreParameters {
++  // Funct 0: Decrypt
++  // Funct 1: Encrypt
++  // Funct 2: Set Key
++
++  val cmd      = Queue(io.cmd)                 // Queue incoming commands
++  val funct    = cmd.bits.inst.funct           // Extract funct field
++  val pointer = cmd.bits.rs1                  // Source register index 1 (rs1)
++  val modifier  = cmd.bits.rs2                  // Source register index 2 (rs2)
++  val rd       = cmd.bits.inst.rd              // Destination register index (rd)
++  val status   = cmd.bits.status
++
++  // Encryption Key Register (128 bit) and modifier Register (16 bit)
++  val keyRegister = RegInit(BigInt("FFFFFFFFFFFFFFFFFFFFFFFFFFFFFFFF", 16).U(128.W))
++
++  val ptr48 = pointer(47, 0)
++  val mod16 = modifier(15, 0)
++  val packed = Cat(mod16, ptr48)
++  val inp64  = Mux(funct === 1.U, packed, pointer)
++
++  // Prince Core
++  //val PACCipherWrap = Module(new pcore) // Instantiate the BlackBox
++  val PrinceCipherWrap = Module(new PrinceCipherWrap) // Instantiate the BlackBox
++  PrinceCipherWrap.io.clk := clock
++  PrinceCipherWrap.io.rst := reset
++
++  PrinceCipherWrap.io.d := funct(0)
++  PrinceCipherWrap.io.inp := inp64
++  PrinceCipherWrap.io.key := keyRegister // Update these lines for key programming
++
++  // Default Value
++  io.interrupt := false.B
++
++  when (funct === 2.U) {
++    keyRegister := Cat(pointer(63, 0), modifier(63, 0))
++  }
++
++  // Authenticate check (funct=0): after decrypt, compare top16 with modifier[15:0]
++  val princeOut        = PrinceCipherWrap.io.out.asUInt  // 64-bit
++  val decPtr48      = princeOut(47, 0)
++  val cleanedPtr64  = Cat(0.U(16.W), decPtr48)
++  val decTop16       = princeOut(63, 48)
++  val authMatches    = decTop16 === mod16
++  val authFailSent64 = "hFFFFFFFFFFFFFFFF".U(64.W)
++
++  val respData = Mux(funct === 2.U, pointer,                                           
++                  Mux(funct === 0.U, Mux(authMatches, cleanedPtr64, authFailSent64),        // auth ok -> decrypted value; else 0xFFFF
++                    princeOut))                                         // encrypt/sign -> cipher text
++
++// -------------------------------------    
++
++  // Processor response interface
++  val doResp = cmd.bits.inst.xd               // Does the instruction expect a response?
++  val stallResp = doResp && !io.resp.ready    // Stall if response isn't ready
++
++  cmd.ready := !stallResp                     // Command is ready when no stall
++
++  // Output Response
++  io.resp.valid := cmd.valid && doResp
++  io.resp.bits.rd := rd 
++  io.resp.bits.data := respData //Mux(funct===2.U, pointer, PrinceCipherWrap.io.out.asUInt)
++
++  // Busy and interrupt signals
++  io.busy := cmd.valid                        // Busy when processing a command
++  
++}
+\ No newline at end of file
