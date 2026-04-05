@@ -1,0 +1,1026 @@
+diff --git a/CMakeLists.txt b/CMakeLists.txt
+index 298d89f68..513602860 100644
+--- a/CMakeLists.txt
++++ b/CMakeLists.txt
+@@ -109,3 +109,24 @@ add_custom_target(llvm-vanilla-remake
+ add_custom_target(llvm-vanilla-clean
+ 	COMMAND cd ${LLVM_V_DIR}/ && rm -rf build
+ )
++
++add_custom_target(llvm-riscv-all
++  COMMAND mkdir -p ${CMAKE_BINARY_DIR}/llvm-riscv-build
++  COMMAND ${CMAKE_COMMAND}
++    -DCMAKE_BUILD_TYPE=Release
++    -DCMAKE_C_COMPILER=riscv64-linux-gnu-gcc
++    -DCMAKE_CXX_COMPILER=riscv64-linux-gnu-g++
++    -DLLVM_TARGETS_TO_BUILD=RISCV
++    -DLLVM_DEFAULT_TARGET_TRIPLE=riscv64-unknown-linux-gnu
++    -DLLVM_TARGET_ARCH=RISCV
++    -DCOMPILER_RT_DEFAULT_TARGET_TRIPLE=riscv64-unknown-linux-gnu
++    -DCOMPILER_RT_BUILD_SANITIZERS=ON
++    ${CMAKE_SOURCE_DIR}/llvm-project/llvm
++  COMMAND make -j$(nproc)
++  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}/llvm-riscv-build
++)
++
++add_custom_target(llvm-remake-riscv
++  COMMAND make -j$(nproc)
++  WORKING_DIRECTORY ${CMAKE_BINARY_DIR}
++)
+diff --git a/llvm-project/clang/include/indexstore/indexstore.h b/llvm-project/clang/include/indexstore/indexstore.h
+index c1bdc8f2c..e7aae03a2 100644
+--- a/llvm-project/clang/include/indexstore/indexstore.h
++++ b/llvm-project/clang/include/indexstore/indexstore.h
+@@ -100,7 +100,7 @@
+ 
+ #if defined(__has_extension)
+ #if __has_extension(cxx_strong_enums) || __has_feature(objc_fixed_enum)
+-# define INDEXSTORE_OPTIONS(_type, _name) enum INDEXSTORE_OPTIONS_ATTRS _name : _type _name; enum INDEXSTORE_OPTIONS_ATTRS _name : _type
++# define INDEXSTORE_OPTIONS(_type, _name) enum INDEXSTORE_OPTIONS_ATTRS _name : _type
+ #endif
+ #endif
+ 
+diff --git a/llvm-project/clang/lib/Driver/ToolChain.cpp b/llvm-project/clang/lib/Driver/ToolChain.cpp
+index a2e6d48f2..8e99cdcd7 100644
+--- a/llvm-project/clang/lib/Driver/ToolChain.cpp
++++ b/llvm-project/clang/lib/Driver/ToolChain.cpp
+@@ -969,7 +969,7 @@ SanitizerMask ToolChain::getSupportedSanitizers() const {
+       getTriple().getArch() == llvm::Triple::aarch64_be)
+     Res |= SanitizerKind::MemTag;
+   // Mohannad - Add DVIPAC sanitizer.
+-  if (getTriple().getArch() == llvm::Triple::x86_64 || getTriple().isAArch64())
++  if (getTriple().getArch() == llvm::Triple::x86_64 || getTriple().isAArch64() || getTriple().getArch() == llvm::Triple::riscv64)
+ 	  Res |= SanitizerKind::DVIPAC;
+   return Res;
+ }
+diff --git a/llvm-project/compiler-rt/lib/dvipac/CMakeLists.txt b/llvm-project/compiler-rt/lib/dvipac/CMakeLists.txt
+index d5b04d87e..94d5bd14e 100644
+--- a/llvm-project/compiler-rt/lib/dvipac/CMakeLists.txt
++++ b/llvm-project/compiler-rt/lib/dvipac/CMakeLists.txt
+@@ -9,7 +9,7 @@ include_directories(..)
+ if (APPLE)
+     set(DVIPAC_FLAGS "${SANITIZER_COMMON_CFLAGS} -fno-ptrauth-intrinsics -fno-ptrauth-returns -fno-ptrauth-calls -fno-ptrauth-indirect-gotos -fno-ptrauth-auth-traps -fno-ptrauth-soft -flto")
+ else()
+-    set(DVIPAC_FLAGS "${SANITIZER_COMMON_CFLAGS}")
++    set(DVIPAC_FLAGS "${SANITIZER_COMMON_CFLAGS} --target=riscv64-unknown-linux-gnu -march=rv64gc -mabi=lp64d")
+ endif()
+ 
+ #set(DVIPAC_FLAGS "${SANITIZER_COMMON_CFLAGS} -march=armv8.3-a -I/home/imohannad/imohannad-ssd/dvi-pac/Resources/sysroot-glibc-linaro-2.25-2018.05-aarch64-linux-gnu/usr/include -B/home/imohannad/imohannad-ssd/dvi-pac/Resources/gcc-linaro-7.3.1-2018.05-x86_64_aarch64-linux-gnu --sysroot=/home/imohannad/imohannad-ssd/dvi-pac/Resources/sysroot-glibc-linaro-2.25-2018.05-aarch64-linux-gnu")
+@@ -29,7 +29,7 @@ if (APPLE)
+ else()
+     add_compiler_rt_runtime(clang_rt.dvipac
+         STATIC
+-        ARCHS aarch64
++        ARCHS ${COMPILER_RT_DEFAULT_TARGET_ARCH}
+         SOURCES ${DVIPAC_SOURCES}
+         CFLAGS ${DVIPAC_FLAGS}
+         PARENT_TARGET dvipac)
+diff --git a/llvm-project/compiler-rt/lib/dvipac/hashtable_1.c b/llvm-project/compiler-rt/lib/dvipac/hashtable_1.c
+index 169493eb4..a2a87bde7 100644
+--- a/llvm-project/compiler-rt/lib/dvipac/hashtable_1.c
++++ b/llvm-project/compiler-rt/lib/dvipac/hashtable_1.c
+@@ -1,4 +1,5 @@
+ #include "hashtable_1.h"
++metadata *shadow_memory;
+ 
+ 
+ void __attribute__((constructor)) init_memory()
+diff --git a/llvm-project/compiler-rt/lib/dvipac/hashtable_1.h b/llvm-project/compiler-rt/lib/dvipac/hashtable_1.h
+index f3424e0b9..17b953ee9 100644
+--- a/llvm-project/compiler-rt/lib/dvipac/hashtable_1.h
++++ b/llvm-project/compiler-rt/lib/dvipac/hashtable_1.h
+@@ -27,4 +27,4 @@ extern metadata* dvipac_get(void **fptr);
+ __attribute__((visibility("default")))
+ extern void dvipac_remove(void **fptr);
+ 
+-metadata *shadow_memory;
++extern metadata *shadow_memory;
+diff --git a/llvm-project/compiler-rt/lib/dvipac/libpac.c b/llvm-project/compiler-rt/lib/dvipac/libpac.c
+index 54bde271c..ca4fedbc9 100644
+--- a/llvm-project/compiler-rt/lib/dvipac/libpac.c
++++ b/llvm-project/compiler-rt/lib/dvipac/libpac.c
+@@ -1,10 +1,192 @@
++// #include <stdio.h>
++// #include <stdlib.h>
++// #include <time.h>
++// #include <string.h>
++// #include <unistd.h>
++// #include <sys/mman.h>
++// #include <stdint.h>
++// #include <sys/types.h>
++// #include <sys/stat.h>
++// #include <fcntl.h>
++// #include <errno.h>
++// #include <stdbool.h>
++// #include "libpac.h"
++// #include "rocc.h"
++// #define PRINCE_OPCODE 1
++
++// #define PAC
++// #define PACINST
++// #define PACEXISTS
++
++// /* Adjust if your PAC encoding differs */
++// #define PAC_MASK 0xFFFF000000000000ULL
++// #define bitGet(value) (((value) & PAC_MASK) != 0)
++
++// /* ========================================================= */
++// /* Add PAC to pointer                                        */
++// /* ========================================================= */
++// void addPAC(void **p) {
++// #ifdef PACEXISTS
++//     if (bitGet((unsigned long long)*p)) {
++//         return;
++//     }
++// #endif
++// #ifdef PAC
++//     metadata *meta = dvipac_get(*p);
++//     if (!meta->tag) {
++//         dvipac_set(*p, 23, 1, 8);
++//     }
++//     unsigned long mod = meta->tag;
++// #ifdef PACINST
++//     /* Use ABI register names (clang requires these for RISC-V) */
++//     register uint64_t rs1 asm("a1") = (uint64_t)(*p);
++//     register uint64_t rs2 asm("a2") = (uint64_t)mod;
++//     register uint64_t rd  asm("a0");
++//     asm volatile(
++//         ".word " STR(CUSTOMX(PRINCE_OPCODE,1,1,1,10,11,12,1))
++//         : "=r"(rd)
++//         : "r"(rs1), "r"(rs2)
++//         : "memory"
++//     );
++//     *p = (void *)rd;
++// #endif
++// #endif
++// }
++
++// /* ========================================================= */
++// /* Authenticate PAC                                          */
++// /* ========================================================= */
++// void authenticatePAC(void **p, unsigned int n) {
++// #ifdef PACEXISTS
++//     if (!bitGet((unsigned long long)*p)) {
++//         return;
++//     }
++// #endif
++// #ifdef PAC //what is its
++//     void *addr = (void *)((char *)(*p) + n);
++//     metadata *meta = dvipac_get(addr);
++//     if (!meta->tag) {
++//         dvipac_set(addr, 23, 1, 8);
++//     }
++//     unsigned long mod = meta->tag;
++// #ifdef PACINST
++//     register uint64_t rs1 asm("a1") = (uint64_t)(*p);
++//     register uint64_t rs2 asm("a2") = (uint64_t)mod;
++//     register uint64_t rd  asm("a0");
++//     asm volatile(
++//         ".word " STR(CUSTOMX(PRINCE_OPCODE,1,1,1,10,11,12,0))
++//         : "=r"(rd)
++//         : "r"(rs1), "r"(rs2)
++//         : "memory"
++//     );
++//     *p = (void *)rd;
++// #endif
++// #endif
++// }
++
++// /* ========================================================= */
++// /* Metadata Functions                                        */
++// /* ========================================================= */
++// void setMetadata(void *p, unsigned int nElements, int typeSize) {
++// #ifdef PAC
++//     if (metadataExists(p)) {
++//         return;
++//     }
++//     unsigned long tag = 23;
++//     dvipac_set(p, tag, nElements, typeSize);
++// #endif
++// }
++
++// void setMetadataObj(void **p, unsigned int nElements, int typeSize) {
++// #ifdef PAC
++//     if (metadataExists(*p)) {
++//         return;
++//     }
++//     unsigned long tag = 23;
++//     dvipac_set(*p, tag, nElements, typeSize);
++// #endif
++// }
++
++// void removeMetadata(void **p) {
++// #ifdef PAC
++//     metadata *meta = dvipac_get(*p);
++//     if (!meta->tag) {
++//         return;
++//     }
++//     unsigned nElements = meta->nElements;
++//     unsigned typeSize  = meta->typeSize;
++//     for (unsigned i = 0; i < nElements; i++) {
++//         dvipac_remove(*p);
++//         *p = (void *)((char *)(*p) + typeSize);
++//     }
++// #endif
++// }
++
++// void removeMetadataStack(void *p) {
++// #ifdef PAC
++//     metadata *meta = dvipac_get(p);
++//     if (!meta->tag) {
++//         return;
++//     }
++//     unsigned nElements = meta->nElements;
++//     unsigned typeSize  = meta->typeSize;
++//     for (unsigned i = 0; i < nElements; i++) {
++//         dvipac_remove(p);
++//         p = (void *)((char *)p + typeSize);
++//     }
++// #endif
++// }
++
++// bool metadataExists(void *p) {
++// #ifndef PAC
++//     return false;
++// #endif
++// #ifdef PAC
++//     metadata *meta = dvipac_get(p);
++//     return meta->tag != 0;
++// #endif
++// }
++
++// /* ========================================================= */
++// /* Replace pointer with signed pointer                       */
++// /* ========================================================= */
++// void replaceWithSignedPointer(void **p, void *signed_p) {
++// #ifdef PACEXISTS
++//     if (!bitGet((unsigned long long)signed_p)) {
++//         return;
++//     }
++// #endif
++//     *p = signed_p;
++// }
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
+ #include <stdio.h>
+ #include <stdlib.h>
+ #include <time.h>
+ #include <string.h>
+ #include <unistd.h>
+ #include <sys/mman.h>
+-//#include <sys/prctl.h>
+ #include <stdint.h>
+ #include <sys/types.h>
+ #include <sys/stat.h>
+@@ -12,171 +194,168 @@
+ #include <errno.h>
+ #include <stdbool.h>
+ #include "libpac.h"
++#include "rocc.h"
++
++#define PRINCE_OPCODE 1
+ #define PAC
+-//#define PACINST
+-#define EOR
++#define PACINST
+ #define PACEXISTS
+-#define bitGet(value) (value >> 48)
+ 
+-// Function to add PAC to a pointer.
+-void addPAC (void** p) {
++#define PAC_MASK 0xFFFF000000000000ULL
++#define bitGet(value) (((value) & PAC_MASK) != 0)
++
++/* ========================================================= */
++/* Inline metadata pointer — matches dvipac_get/set offset   */
++/* ========================================================= */
++static __attribute__((always_inline)) inline metadata* _get_meta(void *addr) {
++    extern metadata *shadow_memory;
++    unsigned long offset = GET_OFFSET(addr) + sizeof(unsigned long) & (SIZE - 1);
++    return (metadata *)((unsigned char *)shadow_memory + offset);
++}
++
++/* ========================================================= */
++/* Aligned 64-bit tag read — avoids packed struct byte loads */
++/* ========================================================= */
++static __attribute__((always_inline)) inline unsigned long _read_tag(metadata *meta) {
++    return *(volatile unsigned long *)meta;
++}
++
++/* ========================================================= */
++/* Inline set — eliminates jal dvipac_set on cold path       */
++/* ========================================================= */
++static __attribute__((always_inline)) inline void _set_meta(metadata *meta,
++        unsigned long tag, unsigned int nElements, int typeSize) {
++    *(volatile unsigned long *)meta              = tag;
++    *((volatile unsigned long *)meta + 1)        = (unsigned long)nElements;
++    *((volatile int *)((unsigned long *)meta + 2)) = typeSize;
++}
++
++/* ========================================================= */
++/* Add PAC to pointer                                        */
++/* ========================================================= */
++__attribute__((noinline))
++void addPAC(void **p) {
+ #ifdef PACEXISTS
+-	if(bitGet((unsigned long long) *p)){
+-        	return;
+-    	}
++    if (bitGet((unsigned long long)*p))
++        return;
+ #endif
+-
+ #ifdef PAC
+-	metadata* meta = dvipac_get(*p);
+-	if (!meta->tag)
+-	{
+-		dvipac_set(*p, 23, 1, 8);
+-	}
+-
+-	unsigned long mod; //64-bit
+-	mod = meta->tag;
+-	
++    metadata *meta = _get_meta(*p);
++    unsigned long mod = _read_tag(meta);
++    if (__builtin_expect(!mod, 0)) {
++        _set_meta(meta, 23, 1, 8);
++        mod = 23;
++    }
+ #ifdef PACINST
+-	__asm volatile ("pacia %x[pointer], %x[modifier]\n"
+-			: [pointer] "+r" (*p)
+-			: [modifier] "r"(mod)
+-			);
+-#endif
+-#ifdef EOR
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
++    register uint64_t rs1 asm("a1") = (uint64_t)(*p);
++    register uint64_t rs2 asm("a2") = (uint64_t)mod;
++    register uint64_t rd  asm("a0");
++    asm volatile(
++        ".word " STR(CUSTOMX(PRINCE_OPCODE,1,1,1,10,11,12,1))
++        : "=r"(rd)
++        : "r"(rs1), "r"(rs2)
++        : "memory"
++    );
++    *p = (void *)rd;
+ #endif
+ #endif
+ }
+ 
+-// Function to authenticate PAC to a pointer.
+-void authenticatePAC (void** p, unsigned int n) {
++/* ========================================================= */
++/* Authenticate PAC                                          */
++/* ========================================================= */
++__attribute__((noinline))
++void authenticatePAC(void **p, unsigned int n) {
+ #ifdef PACEXISTS
+-	if(!bitGet((unsigned long long) *p)){
+-		return;
+-    	}
++    if (!bitGet((unsigned long long)*p))
++        return;
+ #endif
+ #ifdef PAC
+-	metadata* meta = dvipac_get(*p + n);
+-	if (!meta->tag)
+-	{
+-		dvipac_set(*p + n, 23, 1, 8);
+-	}
+-	unsigned long mod; //64-bit
+-	mod = meta->tag;
++    void *addr = (void *)((char *)(*p) + n);
++    metadata *meta = _get_meta(addr);
++    unsigned long mod = _read_tag(meta);
++    if (__builtin_expect(!mod, 0)) {
++        _set_meta(meta, 23, 1, 8);
++        mod = 23;
++    }
+ #ifdef PACINST
+-	__asm volatile ("autia %x[pointer], %x[modifier]\n"
+-			: [pointer] "+r" (*p)
+-			: [modifier] "r"(mod) 
+-			);
+-#endif
+-#ifdef EOR
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
+-    __asm volatile ("eor x18, x18, x18\n");
++    register uint64_t rs1 asm("a1") = (uint64_t)(*p);
++    register uint64_t rs2 asm("a2") = (uint64_t)mod;
++    register uint64_t rd  asm("a0");
++    asm volatile(
++        ".word " STR(CUSTOMX(PRINCE_OPCODE,1,1,1,10,11,12,0))
++        : "=r"(rd)
++        : "r"(rs1), "r"(rs2)
++        : "memory"
++    );
++    *p = (void *)rd;
+ #endif
+ #endif
+ }
+ 
+-
+-// Function that inserts metadata into the hashtable.
+-void setMetadata(void* p, unsigned int nElements, int typeSize){
++/* ========================================================= */
++/* Metadata Functions                                        */
++/* ========================================================= */
++void setMetadata(void *p, unsigned int nElements, int typeSize) {
+ #ifdef PAC
+-	if (metadataExists(p))
+-	{
+-		return;
+-	}	
+-	unsigned long tag; //64-bit
+-	tag = 23;
+-	dvipac_set(p, tag, nElements, typeSize);
++    metadata *meta = _get_meta(p);
++    if (!_read_tag(meta))
++        _set_meta(meta, 23, nElements, typeSize);
+ #endif
+ }
+ 
+-// Function that inserts metadata into the hashtable.
+-void setMetadataObj(void** p, unsigned int nElements, int typeSize){
++void setMetadataObj(void **p, unsigned int nElements, int typeSize) {
+ #ifdef PAC
+-	if (metadataExists(*p))
+-	{
+-		return;
+-	}	
+-	unsigned long tag; //64-bit
+-	tag = 23;
+-	dvipac_set(*p, tag, nElements, typeSize);
++    metadata *meta = _get_meta(*p);
++    if (!_read_tag(meta))
++        _set_meta(meta, 23, nElements, typeSize);
+ #endif
+ }
+ 
+-// Function that removes metadata from the hashtable.
+-void removeMetadata(void** p){
++void removeMetadata(void **p) {
+ #ifdef PAC
+-	metadata* meta = dvipac_get(*p);
+-	if (!meta->tag)
+-	{
+-		return;	
+-	}
+-	unsigned nElements = meta->nElements;
+-	unsigned typeSize = meta->typeSize;
+-	for(int i = 0; i < nElements; i++){
+-		dvipac_remove(*p);
+-		(*p) = (*p) + typeSize;
+-	}
++    metadata *meta = _get_meta(*p);
++    unsigned long tag = _read_tag(meta);
++    if (!tag)
++        return;
++    unsigned nElements = meta->nElements;
++    unsigned typeSize  = meta->typeSize;
++    for (unsigned i = 0; i < nElements; i++) {
++        dvipac_remove(*p);
++        *p = (void *)((char *)(*p) + typeSize);
++    }
+ #endif
+ }
+ 
+-// Function that removes metadata from the hashtable.
+-void removeMetadataStack(void* p){
++void removeMetadataStack(void *p) {
+ #ifdef PAC
+-	metadata* meta = dvipac_get(p);
+-	if (!meta->tag)
+-	{
+-		return;
+-	}
+-	unsigned nElements = meta->nElements;
+-	unsigned typeSize = meta->typeSize;
+-	for(int i = 0; i < nElements; i++){
+-		dvipac_remove(p);
+-		(p) = (p) + typeSize;
+-	}
++    metadata *meta = _get_meta(p);
++    unsigned long tag = _read_tag(meta);
++    if (!tag)
++        return;
++    unsigned nElements = meta->nElements;
++    unsigned typeSize  = meta->typeSize;
++    for (unsigned i = 0; i < nElements; i++) {
++        dvipac_remove(p);
++        p = (void *)((char *)p + typeSize);
++    }
+ #endif
+ }
+ 
+-// Function that detects if metadata exists.
+-bool metadataExists(void* p){
++bool metadataExists(void *p) {
+ #ifndef PAC
+-	if (p){
+-		return false;
+-	}
+-	else{
+-		return true;
+-	}
+-#endif
+-#ifdef PAC
+-	metadata* meta = dvipac_get(p);
+-	if (!meta->tag){
+-		return false;
+-	}
+-	else{
+-		return true;
+-	}
++    return false;
+ #endif
++    return _read_tag(_get_meta(p)) != 0;
+ }
+ 
+-// Function that replaces pointer with already PACed pointer
+-void replaceWithSignedPointer(void** p, void* signed_p){
+-
++/* ========================================================= */
++/* Replace pointer with signed pointer                       */
++/* ========================================================= */
++void replaceWithSignedPointer(void **p, void *signed_p) {
+ #ifdef PACEXISTS
+-	if(!bitGet((unsigned long long) signed_p)){
+-        	return;
+-    	}
++    if (!bitGet((unsigned long long)signed_p))
++        return;
+ #endif
+-
+-	*p = signed_p;
+-}
++    *p = signed_p;
++}
+\ No newline at end of file
+diff --git a/llvm-project/compiler-rt/lib/dvipac/rocc.h b/llvm-project/compiler-rt/lib/dvipac/rocc.h
+new file mode 100644
+index 000000000..fd6da6a90
+--- /dev/null
++++ b/llvm-project/compiler-rt/lib/dvipac/rocc.h
+@@ -0,0 +1,98 @@
++// Based on code by Schuyler Eldridge. Copyright (c) Boston University
++// https://github.com/seldridge/rocket-rocc-examples/blob/master/src/main/c/rocc.h
++
++#ifndef SRC_MAIN_C_ROCC_H
++#define SRC_MAIN_C_ROCC_H
++
++#include <stdint.h>
++
++#define STR1(x) #x
++#define STR(x) STR1(x)
++#define EXTRACT(a, size, offset) (((~(~0 << size) << offset) & a) >> offset)
++
++#define CUSTOMX_OPCODE(x) CUSTOM_ ## x
++#define CUSTOM_0 0b0001011
++#define CUSTOM_1 0b0101011
++#define CUSTOM_2 0b1011011
++#define CUSTOM_3 0b1111011
++
++#define CUSTOMX(X, xd, xs1, xs2, rd, rs1, rs2, funct) \
++  CUSTOMX_OPCODE(X)                     |             \
++  (rd                 << (7))           |             \
++  (xs2                << (7+5))         |             \
++  (xs1                << (7+5+1))       |             \
++  (xd                 << (7+5+2))       |             \
++  (rs1                << (7+5+3))       |             \
++  (rs2                << (7+5+3+5))     |             \
++  (EXTRACT(funct, 7, 0) << (7+5+3+5+5))
++
++// Standard macro that passes rd, rs1, and rs2 via registers
++#define ROCC_INSTRUCTION_DSS(X, rd, rs1, rs2, funct) \
++	ROCC_INSTRUCTION_R_R_R(X, rd, rs1, rs2, funct, 10, 11, 12)
++
++#define ROCC_INSTRUCTION_DS(X, rd, rs1, funct) \
++	ROCC_INSTRUCTION_R_R_I(X, rd, rs1, 0, funct, 10, 11)
++
++#define ROCC_INSTRUCTION_D(X, rd, funct) \
++	ROCC_INSTRUCTION_R_I_I(X, rd, 0, 0, funct, 10)
++
++#define ROCC_INSTRUCTION_SS(X, rs1, rs2, funct) \
++	ROCC_INSTRUCTION_I_R_R(X, 0, rs1, rs2, funct, 11, 12)
++
++#define ROCC_INSTRUCTION_S(X, rs1, funct) \
++	ROCC_INSTRUCTION_I_R_I(X, 0, rs1, 0, funct, 11)
++
++#define ROCC_INSTRUCTION(X, funct) \
++	ROCC_INSTRUCTION_I_I_I(X, 0, 0, 0, funct)
++
++// rd, rs1, and rs2 are data
++// rd_n, rs_1, and rs2_n are the register numbers to use
++#define ROCC_INSTRUCTION_R_R_R(X, rd, rs1, rs2, funct, rd_n, rs1_n, rs2_n) { \
++    register uint64_t rd_  asm ("x" # rd_n);                                 \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;               \
++    register uint64_t rs2_ asm ("x" # rs2_n) = (uint64_t) rs2;               \
++    asm volatile (                                                           \
++        ".word " STR(CUSTOMX(X, 1, 1, 1, rd_n, rs1_n, rs2_n, funct)) "\n\t"  \
++        : "=r" (rd_)                                                         \
++        : [_rs1] "r" (rs1_), [_rs2] "r" (rs2_));                             \
++    rd = rd_;                                                                \
++  }
++
++#define ROCC_INSTRUCTION_R_R_I(X, rd, rs1, rs2, funct, rd_n, rs1_n) {     \
++    register uint64_t rd_  asm ("x" # rd_n);                              \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;            \
++    asm volatile (                                                        \
++        ".word " STR(CUSTOMX(X, 1, 1, 0, rd_n, rs1_n, rs2, funct)) "\n\t" \
++        : "=r" (rd_) : [_rs1] "r" (rs1_));                                \
++    rd = rd_;                                                             \
++  }
++
++#define ROCC_INSTRUCTION_R_I_I(X, rd, rs1, rs2, funct, rd_n) {           \
++    register uint64_t rd_  asm ("x" # rd_n);                             \
++    asm volatile (                                                       \
++        ".word " STR(CUSTOMX(X, 1, 0, 0, rd_n, rs1, rs2, funct)) "\n\t"  \
++        : "=r" (rd_));                                                   \
++    rd = rd_;                                                            \
++  }
++
++#define ROCC_INSTRUCTION_I_R_R(X, rd, rs1, rs2, funct, rs1_n, rs2_n) {    \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;            \
++    register uint64_t rs2_ asm ("x" # rs2_n) = (uint64_t) rs2;            \
++    asm volatile (                                                        \
++        ".word " STR(CUSTOMX(X, 0, 1, 1, rd, rs1_n, rs2_n, funct)) "\n\t" \
++        :: [_rs1] "r" (rs1_), [_rs2] "r" (rs2_));                         \
++  }
++
++#define ROCC_INSTRUCTION_I_R_I(X, rd, rs1, rs2, funct, rs1_n) {         \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;          \
++    asm volatile (                                                      \
++        ".word " STR(CUSTOMX(X, 0, 1, 0, rd, rs1_n, rs2, funct)) "\n\t" \
++        :: [_rs1] "r" (rs1_));                                          \
++  }
++
++#define ROCC_INSTRUCTION_I_I_I(X, rd, rs1, rs2, funct) {                 \
++    asm volatile (                                                       \
++        ".word " STR(CUSTOMX(X, 0, 0, 0, rd, rs1, rs2, funct)) "\n\t" ); \
++  }
++
++#endif  // SRC_MAIN_C_ACCUMULATOR_H
+diff --git a/llvm-project/compiler-rt/lib/sanitizer_common/sanitizer_platform_limits_posix.cpp b/llvm-project/compiler-rt/lib/sanitizer_common/sanitizer_platform_limits_posix.cpp
+index 7d588ea8f..608731c31 100644
+--- a/llvm-project/compiler-rt/lib/sanitizer_common/sanitizer_platform_limits_posix.cpp
++++ b/llvm-project/compiler-rt/lib/sanitizer_common/sanitizer_platform_limits_posix.cpp
+@@ -1215,16 +1215,16 @@ CHECK_SIZE_AND_OFFSET(group, gr_gid);
+ CHECK_SIZE_AND_OFFSET(group, gr_mem);
+ 
+ #if HAVE_RPC_XDR_H
+-CHECK_TYPE_SIZE(XDR);
+-CHECK_SIZE_AND_OFFSET(XDR, x_op);
+-CHECK_SIZE_AND_OFFSET(XDR, x_ops);
+-CHECK_SIZE_AND_OFFSET(XDR, x_public);
+-CHECK_SIZE_AND_OFFSET(XDR, x_private);
+-CHECK_SIZE_AND_OFFSET(XDR, x_base);
+-CHECK_SIZE_AND_OFFSET(XDR, x_handy);
+-COMPILER_CHECK(__sanitizer_XDR_ENCODE == XDR_ENCODE);
+-COMPILER_CHECK(__sanitizer_XDR_DECODE == XDR_DECODE);
+-COMPILER_CHECK(__sanitizer_XDR_FREE == XDR_FREE);
++// CHECK_TYPE_SIZE(XDR);
++// CHECK_SIZE_AND_OFFSET(XDR, x_op);
++// CHECK_SIZE_AND_OFFSET(XDR, x_ops);
++// CHECK_SIZE_AND_OFFSET(XDR, x_public);
++// CHECK_SIZE_AND_OFFSET(XDR, x_private);
++// CHECK_SIZE_AND_OFFSET(XDR, x_base);
++// CHECK_SIZE_AND_OFFSET(XDR, x_handy);
++// COMPILER_CHECK(__sanitizer_XDR_ENCODE == XDR_ENCODE);
++// COMPILER_CHECK(__sanitizer_XDR_DECODE == XDR_DECODE);
++// COMPILER_CHECK(__sanitizer_XDR_FREE == XDR_FREE);
+ #endif
+ 
+ #if SANITIZER_LINUX && !SANITIZER_ANDROID
+diff --git a/llvm-project/llvm/cmake/config-ix.cmake b/llvm-project/llvm/cmake/config-ix.cmake
+index a16038f70..fae338d34 100644
+--- a/llvm-project/llvm/cmake/config-ix.cmake
++++ b/llvm-project/llvm/cmake/config-ix.cmake
+@@ -415,6 +415,8 @@ elseif (LLVM_NATIVE_ARCH MATCHES "wasm32")
+   set(LLVM_NATIVE_ARCH WebAssembly)
+ elseif (LLVM_NATIVE_ARCH MATCHES "wasm64")
+   set(LLVM_NATIVE_ARCH WebAssembly)
++elseif (LLVM_NATIVE_ARCH MATCHES "riscv")
++  set(LLVM_NATIVE_ARCH RISCV)
+ elseif (LLVM_NATIVE_ARCH MATCHES "riscv32")
+   set(LLVM_NATIVE_ARCH RISCV)
+ elseif (LLVM_NATIVE_ARCH MATCHES "riscv64")
+diff --git a/llvm-project/llvm/lib/Transforms/IPO/DVIPACPass.cpp b/llvm-project/llvm/lib/Transforms/IPO/DVIPACPass.cpp
+index 77677e377..7eac0ef7a 100644
+--- a/llvm-project/llvm/lib/Transforms/IPO/DVIPACPass.cpp
++++ b/llvm-project/llvm/lib/Transforms/IPO/DVIPACPass.cpp
+@@ -43,7 +43,7 @@
+ #include <tuple>
+ #include <unordered_map>
+ 
+-//#define CPS
++#define CPS
+ 
+ using namespace llvm;
+ using std::unordered_map;
+@@ -953,6 +953,51 @@ namespace {
+ 
+ 
+ 		// Check if type should be protected
++		// bool shouldProtectType(Type* Ty){
++		// 	// Function pointer
++		// 	if (Ty->isPointerTy() && cast<PointerType>(Ty)->getElementType()->isFunctionTy()){
++		// 		return true;
++		// 	}
++
++		// 	// Generic pointer - Recursively find out if it's sensitive
++		// 	else if (PointerType* PTy = dyn_cast<PointerType>(Ty)){
++		// 		Type* ETy = PTy->getElementType();
++		// 		// NEW: pointer-to-pointer is sensitive (covers opaque FILE* on Linux)
++		// 		if (ETy->isPointerTy()){
++		// 			return true;
++		// 		}
++		// 		return shouldProtectType(ETy);
++		// 	}
++
++		// 	// Array
++		// 	else if (ArrayType* ATy = dyn_cast<ArrayType>(Ty)){
++		// 		Type* ETy = ATy->getElementType();
++		// 		return shouldProtectType(ETy);
++		// 	}
++
++		// 	// Struct
++		// 	else if (StructType* STy = dyn_cast<StructType>(Ty)){
++		// 		if (STy->isOpaque()){
++		// 			return false;
++		// 		}
++		// 		TypesProtectInfoTy::key_type Key(STy, false);
++		// 		TypesProtectInfoTy::iterator TIt = StructTypeProtectInfo.find(Key);
++		// 		if(TIt != StructTypeProtectInfo.end()){
++		// 			return TIt->second;
++		// 		}
++		// 		StructTypeProtectInfo[Key] = false;
++		// 		unsigned numElements = STy->getNumElements();
++		// 		for (unsigned i = 0; i < numElements; i++){
++		// 			if (shouldProtectType(STy->getElementType(i))){
++		// 				StructTypeProtectInfo[Key] = true;
++		// 				return true;
++		// 			}
++		// 		}
++		// 	}
++
++		// 	return false;
++		// }
++		
+ 		bool shouldProtectType(Type* Ty){
+ 			// Function pointer
+ 			if (Ty->isPointerTy() && cast<PointerType>(Ty)->getElementType()->isFunctionTy()){
+@@ -1123,110 +1168,142 @@ namespace {
+ 			return realValue;
+ 		}
+ 
+-		// Insert Set Meta Library call. This is because setMetadata takes three arguements.
+-		void insertSetMetaLibCall(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName, unsigned int Elements, int typeSize){		
++		void insertSetMetaLibCall(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName, unsigned int Elements, int typeSize){
+ 			LLVMContext &C = InsertPointInst->getFunction()->getContext();
+ 			Value* NumElements = ConstantInt::get(Type::getInt32Ty(C), Elements);
+ 			Value* TypeSize = ConstantInt::get(Type::getInt32Ty(C), typeSize);
+ 			IRBuilder<> builder(C);
+-
+ 			Type* Ty = Type::getInt8Ty(C)->getPointerTo();
+-			// Insertion point after passed instruction
+ 			builder.SetInsertPoint(InsertPointInst->getNextNode());
+-
+-			ArrayRef<Type*> FuncParams = {
+-				Ty->getPointerTo(),
+-				NumElements->getType(),
+-				TypeSize->getType()
+-			};
+-
+-			Type* ResultFTy = Type::getVoidTy(C);
+-			FunctionType* FTy = FunctionType::get(ResultFTy, FuncParams, false);
+-
++			ArrayRef<Type*> FuncParams = { Ty, NumElements->getType(), TypeSize->getType() };
++			FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), FuncParams, false);
+ 			FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
+-			Value* Addr = builder.Insert(CastInst::CreatePointerCast(ArgVal, Ty->getPointerTo(),""));
+-			ArrayRef<Value*> FuncArgs = {
+-				Addr,
+-				NumElements,
+-				TypeSize
+-			};
+-
+-			builder.CreateCall(Func, FuncArgs);
++			Value* Addr;
++			if (ArgVal->getType()->isPointerTy())
++				Addr = builder.CreateBitCast(ArgVal, Ty);
++			else
++				Addr = builder.CreateIntToPtr(ArgVal, Ty);
++			builder.CreateCall(FTy, Func.getCallee(), {Addr, NumElements, TypeSize});
+ 		}
+ 
+-		// Insert Library call.
+ 		CallInst* insertLibCallAfter(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName){
+ 			LLVMContext &C = InsertPointInst->getFunction()->getContext();
+ 			IRBuilder<> builder(C);
+-			
+ 			Type* Ty = Type::getInt8Ty(C)->getPointerTo();
+-			// Insertion point after passed instruction
+ 			builder.SetInsertPoint(InsertPointInst->getNextNode());
+-
+-			ArrayRef<Type*> FuncParams = {
+-				Ty->getPointerTo()
+-			};
+-
+-			Type* ResultFTy = Type::getVoidTy(C);
+-			FunctionType* FTy = FunctionType::get(ResultFTy, FuncParams, false);
+-
++			FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), {Ty->getPointerTo()}, false);
+ 			FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
+-			ArrayRef<Value*> FuncArgs = {
+-				builder.CreatePointerCast(ArgVal, Ty->getPointerTo())
+-			};
+-
+-			return builder.CreateCall(Func, FuncArgs);
++			Value* Addr;
++			if (ArgVal->getType()->isPointerTy())
++				Addr = builder.CreateBitCast(ArgVal, Ty->getPointerTo());
++			else
++				Addr = builder.CreateIntToPtr(ArgVal, Ty->getPointerTo());
++			return builder.CreateCall(FTy, Func.getCallee(), {Addr});
+ 		}
+ 
+-		// Insert Library call.
+ 		CallInst* insertLibCallBefore(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName){
+ 			LLVMContext &C = InsertPointInst->getFunction()->getContext();
+ 			IRBuilder<> builder(C);
+-			
+ 			Type* Ty = Type::getInt8Ty(C)->getPointerTo();
+-			// Insertion point before passed instruction
+ 			builder.SetInsertPoint(InsertPointInst);
+-
+-			ArrayRef<Type*> FuncParams = {
+-				Ty->getPointerTo()
+-			};
+-
+-			Type* ResultFTy = Type::getVoidTy(C);
+-			FunctionType* FTy = FunctionType::get(ResultFTy, FuncParams, false);
+-
++			FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), {Ty->getPointerTo()}, false);
+ 			FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
+-			ArrayRef<Value*> FuncArgs = {
+-				builder.CreatePointerCast(ArgVal, Ty->getPointerTo())
+-			};
+-
+-			return builder.CreateCall(Func, FuncArgs);
++			Value* Addr;
++			if (ArgVal->getType()->isPointerTy())
++				Addr = builder.CreateBitCast(ArgVal, Ty->getPointerTo());
++			else
++				Addr = builder.CreateIntToPtr(ArgVal, Ty->getPointerTo());
++			return builder.CreateCall(FTy, Func.getCallee(), {Addr});
+ 		}
+ 
+ 		CallInst* insertLibCallAuth(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName, unsigned int arrayIndex){
+ 			LLVMContext &C = InsertPointInst->getFunction()->getContext();
+ 			IRBuilder<> builder(C);
+-			
+ 			Type* Ty = Type::getInt8Ty(C)->getPointerTo();
+ 			Value* ArrayIndex = ConstantInt::get(Type::getInt32Ty(C), arrayIndex);
+-			// Insertion point before passed instruction
+ 			builder.SetInsertPoint(InsertPointInst);
++			FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), {Ty->getPointerTo(), ArrayIndex->getType()}, false);
++			FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
++			Value* Addr;
++			if (ArgVal->getType()->isPointerTy())
++				Addr = builder.CreateBitCast(ArgVal, Ty->getPointerTo());
++			else
++				Addr = builder.CreateIntToPtr(ArgVal, Ty->getPointerTo());
++			return builder.CreateCall(FTy, Func.getCallee(), {Addr, ArrayIndex});
++		}
+ 
+-			ArrayRef<Type*> FuncParams = {
+-				Ty->getPointerTo(),
+-				ArrayIndex->getType()
+-			};
++		// void insertSetMetaLibCall(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName, unsigned int Elements, int typeSize){
++		// 	LLVMContext &C = InsertPointInst->getFunction()->getContext();
++		// 	IRBuilder<> builder(C);
++		// 	if (!ArgVal->getType()->isPointerTy()) return;
+ 
+-			Type* ResultFTy = Type::getVoidTy(C);
+-			FunctionType* FTy = FunctionType::get(ResultFTy, FuncParams, false);
++		// 	builder.SetInsertPoint(InsertPointInst->getNextNode());
+ 
+-			FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
+-			ArrayRef<Value*> FuncArgs = {
+-				builder.CreatePointerCast(ArgVal, Ty->getPointerTo()),
+-				ArrayIndex
+-			};
++		// 	Type* Int8PtrTy = Type::getInt8Ty(C)->getPointerTo();
++		// 	Value* AsInt = builder.CreatePtrToInt(ArgVal, Type::getInt64Ty(C));
++		// 	Value* CastedArg = builder.CreateIntToPtr(AsInt, Int8PtrTy);
+ 
+-			return builder.CreateCall(Func, FuncArgs);
+-		}
++		// 	Value* NumElements = ConstantInt::get(Type::getInt32Ty(C), Elements);
++		// 	Value* TypeSize = ConstantInt::get(Type::getInt32Ty(C), typeSize);
++
++		// 	FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), {Int8PtrTy, Type::getInt32Ty(C), Type::getInt32Ty(C)}, false);
++		// 	FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
++
++		// 	builder.CreateCall(FTy, Func.getCallee(), {CastedArg, NumElements, TypeSize});
++		// }
++
++		// CallInst* insertLibCallAfter(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName){
++		// 	LLVMContext &C = InsertPointInst->getFunction()->getContext();
++		// 	IRBuilder<> builder(C);
++		// 	if (!ArgVal->getType()->isPointerTy()) return nullptr;
++
++		// 	builder.SetInsertPoint(InsertPointInst->getNextNode());
++
++		// 	Type* Int8PtrPtrTy = Type::getInt8Ty(C)->getPointerTo()->getPointerTo();
++		// 	Value* AsInt = builder.CreatePtrToInt(ArgVal, Type::getInt64Ty(C));
++		// 	Value* CastedArg = builder.CreateIntToPtr(AsInt, Int8PtrPtrTy);
++
++		// 	FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), {Int8PtrPtrTy}, false);
++		// 	FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
++
++		// 	return builder.CreateCall(FTy, Func.getCallee(), {CastedArg});
++		// }
++
++		// CallInst* insertLibCallBefore(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName){
++		// 	LLVMContext &C = InsertPointInst->getFunction()->getContext();
++		// 	IRBuilder<> builder(C);
++		// 	if (!ArgVal->getType()->isPointerTy()) return nullptr;
++
++		// 	builder.SetInsertPoint(InsertPointInst);
++
++		// 	Type* Int8PtrPtrTy = Type::getInt8Ty(C)->getPointerTo()->getPointerTo();
++		// 	Value* AsInt = builder.CreatePtrToInt(ArgVal, Type::getInt64Ty(C));
++		// 	Value* CastedArg = builder.CreateIntToPtr(AsInt, Int8PtrPtrTy);
++
++		// 	FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), {Int8PtrPtrTy}, false);
++		// 	FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
++
++		// 	return builder.CreateCall(FTy, Func.getCallee(), {CastedArg});
++		// }
++
++		// CallInst* insertLibCallAuth(Value* ArgVal, Instruction* InsertPointInst, StringRef FunctionName, unsigned int arrayIndex){
++		// 	LLVMContext &C = InsertPointInst->getFunction()->getContext();
++		// 	IRBuilder<> builder(C);
++		// 	if (!ArgVal->getType()->isPointerTy()) return nullptr;
++
++		// 	builder.SetInsertPoint(InsertPointInst);
++
++		// 	Type* Int8PtrPtrTy = Type::getInt8Ty(C)->getPointerTo()->getPointerTo();
++		// 	Value* AsInt = builder.CreatePtrToInt(ArgVal, Type::getInt64Ty(C));
++		// 	Value* CastedArg = builder.CreateIntToPtr(AsInt, Int8PtrPtrTy);
++
++		// 	Value* ArrayIndex = ConstantInt::get(Type::getInt32Ty(C), arrayIndex);
++
++		// 	FunctionType* FTy = FunctionType::get(Type::getVoidTy(C), {Int8PtrPtrTy, Type::getInt32Ty(C)}, false);
++		// 	FunctionCallee Func = InsertPointInst->getModule()->getOrInsertFunction(FunctionName, FTy);
++
++		// 	return builder.CreateCall(FTy, Func.getCallee(), {CastedArg, ArrayIndex});
++		// }
+ 
+ 
+ 		// Print stats
+diff --git a/llvm-project/llvm/utils/benchmark/src/benchmark_register.h b/llvm-project/llvm/utils/benchmark/src/benchmark_register.h
+index 0705e219f..6ca78ce9b 100644
+--- a/llvm-project/llvm/utils/benchmark/src/benchmark_register.h
++++ b/llvm-project/llvm/utils/benchmark/src/benchmark_register.h
+@@ -1,3 +1,4 @@
++#include <limits>
+ #ifndef BENCHMARK_REGISTER_H
+ #define BENCHMARK_REGISTER_H
+ 
