@@ -1,3 +1,1998 @@
+diff --git a/LIPPEN_tests/Makefile b/LIPPEN_tests/Makefile
+new file mode 100644
+index 000000000000..c5430bff2956
+--- /dev/null
++++ b/LIPPEN_tests/Makefile
+@@ -0,0 +1,738 @@
++# ##### Makefile for Mahcine PASS
++# -include config.mk
++
++# # Disable built-in suffix/implicit rules so host 'as' isn't used accidentally.
++# .SUFFIXES:
++# MAKEFLAGS += -rR
++
++# # =============================
++# # LLVM tools (use your LLVM build)
++# # =============================
++# LLVM_CONFIG ?= /home/pac/llvm-project/build/bin/llvm-config
++# LLVM_BINDIR := $(shell $(LLVM_CONFIG) --bindir)
++# CLANG := $(LLVM_BINDIR)/clang
++# OPT   := $(LLVM_BINDIR)/opt
++# LLC   := $(LLVM_BINDIR)/llc
++
++# # =============================
++# # RISC-V GCC toolchain (for linking/runtime)
++# # =============================
++# RISCV_GCC     ?= /home/pac/Desktop/lalit/rocket-modified/chipyard/.conda-env/riscv-tools/bin/riscv64-unknown-elf-gcc
++# GCC           ?= $(RISCV_GCC)
++# RISCV_TRIPLE  ?= riscv64-unknown-elf
++# RISCV_ARCH    ?= rv64gc
++# RISCV_ABI     ?= lp64d
++# RISCV_MATTR   ?= +m,+a,+f,+d,+c
++# RISCV_SYSROOT ?= $(shell $(RISCV_GCC) --print-sysroot)
++# RISCV_PREFIX  ?= $(shell dirname $(shell dirname $(shell $(RISCV_GCC) -print-libgcc-file-name)))
++# OBJDUMP       ?= $(RISCV_TRIPLE)-objdump
++
++# # Core compile/link flags
++# CFLAGS  ?= -std=gnu99 -O2 -Wall
++# CFLAGS  += -fno-common -fno-builtin -ffreestanding -mcmodel=medany
++# LDFLAGS ?= -static
++
++# # =============================
++# # Chipyard libgloss (crt0/specs/linker)
++# # =============================
++# LIBGLOSS_DIR := /home/pac/Desktop/lalit/rocket-modified/chipyard/tests
++# include $(LIBGLOSS_DIR)/libgloss.mk
++
++# LIBGLOSS_LINK_FLAGS :=
++# ifdef libgloss_ldflags
++#   LIBGLOSS_LINK_FLAGS += $(libgloss_ldflags)
++# endif
++# ifdef libgloss_specs
++#   LIBGLOSS_LINK_FLAGS += --specs=$(libgloss_specs)
++# endif
++# ifdef libgloss_linker_script
++#   LIBGLOSS_LINK_FLAGS += -T $(libgloss_linker_script)
++# endif
++# # De-dup specs if libgloss already injected them
++# LIBGLOSS_LINK_FLAGS_NO_SPECS := $(filter-out -specs=% --specs=%,$(LIBGLOSS_LINK_FLAGS))
++
++# # =============================
++# # Apps / sources
++# # =============================
++# PROGRAMS ?= test
++# APPS := $(PROGRAMS)
++
++# # Keep intermediates to inspect IR/MIR/obj
++# .SECONDARY:
++
++# .PHONY: all clean distclean riscv-llvm asm obj ll mir
++
++# # =============================
++# # Top-level targets
++# # =============================
++# all: riscv-llvm
++# riscv-llvm: $(addsuffix .llvm.riscv,$(APPS))
++
++# # Final ELF (link with GCC + libgloss)
++# %.llvm.riscv: %.riscv.o pac_runtime.o $(libgloss)
++# 	@echo "=== [riscv-llvm] Linking $@ (GCC + libgloss) ==="
++# 	$(GCC) $(LDFLAGS) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) -mcmodel=medany \
++# 		$^ -o $@ $(LIBGLOSS_LINK_FLAGS_NO_SPECS)
++
++# # =============================
++# # Direct compilation path (simpler)
++# # =============================
++
++# # Generate object file directly from C source
++# # This avoids the multi-step IR->OPT->MIR flow and ensures single pass through backend
++# %.riscv.o: %.c
++# 	@echo "=== [riscv-llvm] Compiling $< directly to object ==="
++# 	$(CLANG) -O2 -c \
++# 	         -target $(RISCV_TRIPLE) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++# 	         --gcc-toolchain=$(RISCV_PREFIX) --sysroot=$(RISCV_SYSROOT) \
++# 	         -ffreestanding -fno-builtin -fno-common -mcmodel=medany \
++# 	         -I$(RISCV_SYSROOT)/include -I$(RISCV_SYSROOT)/include/newlib \
++# 	         $< -o $@
++# 	@echo "=== [riscv-llvm] Disassembling $@ ==="
++# 	@$(OBJDUMP) -d $@ | grep -A 40 "<foo>:" || true
++
++# # Alternative: Generate assembly to inspect
++# %.riscv.s: %.c
++# 	@echo "=== [riscv-llvm] Compiling $< to assembly ==="
++# 	$(CLANG) -O2 -S \
++# 	         -target $(RISCV_TRIPLE) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++# 	         --gcc-toolchain=$(RISCV_PREFIX) --sysroot=$(RISCV_SYSROOT) \
++# 	         -ffreestanding -fno-builtin -fno-common -mcmodel=medany \
++# 	         -I$(RISCV_SYSROOT)/include -I$(RISCV_SYSROOT)/include/newlib \
++# 	         $< -o $@
++# 	@echo "=== [riscv-llvm] Checking for PAC instructions in $@ ==="
++# 	@grep -nE 'rocc_prince_sign|rocc_prince_auth|\bret\b|jalr' $@ || true
++
++# asm: $(addsuffix .riscv.s,$(APPS))
++# obj: $(addsuffix .riscv.o,$(APPS))
++
++# # =============================
++# # Optional: IR inspection targets
++# # =============================
++
++# # Generate LLVM IR
++# %.riscv.ll: %.c
++# 	@echo "=== [riscv-llvm] Generating LLVM IR: $< ==="
++# 	$(CLANG) -O2 -S -emit-llvm \
++# 	         -target $(RISCV_TRIPLE) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++# 	         --gcc-toolchain=$(RISCV_PREFIX) --sysroot=$(RISCV_SYSROOT) \
++# 	         -ffreestanding -fno-builtin -fno-common -mcmodel=medany \
++# 	         -I$(RISCV_SYSROOT)/include -I$(RISCV_SYSROOT)/include/newlib \
++# 	         $< -o $@
++
++# ll: $(addsuffix .riscv.ll,$(APPS))
++
++# # =============================
++# # ROCC runtime
++# # =============================
++# pac_runtime.o: pac_runtime.c pac_runtime.h
++# 	$(GCC) $(CFLAGS) -c $< -o $@
++
++# # =============================
++# # Housekeeping
++# # =============================
++# clean:
++# 	rm -f *.o *.s *.ll *.mir
++# 	rm -f $(addsuffix .riscv.ll,$(APPS)) \
++# 	      $(addsuffix .riscv.s,$(APPS)) \
++# 	      $(addsuffix .riscv.o,$(APPS))
++# 	rm -f $(addsuffix .llvm.riscv,$(APPS))
++# 	$(if $(libgloss),rm -rf $(libgloss_builddir)/)
++
++# distclean: clean
++# 	@true
++
++
++
++	
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++##### Makefile (Linux-only) for Machine PASS on RISC-V
++# Builds a Linux user-space ELF using riscv64-linux-gnu toolchain and your LLVM/Clang.
++# No libgloss, no newlib, no freestanding.
++#
++# Usage:
++#   make clean
++#   make              # builds $(PROGRAMS).linux.riscv
++#
++# Run on FPGA Linux:
++#   scp test.linux.riscv <board>:/tmp/test
++#   ssh <board> "chmod +x /tmp/test && /tmp/test [iters] [trials]"
++
++-include config.mk
++
++.SUFFIXES:
++MAKEFLAGS += -rR
++
++# =============================
++# LLVM tools (use your LLVM build)
++# =============================
++LLVM_CONFIG ?= /home/pac/llvm-project/build/bin/llvm-config
++LLVM_BINDIR := $(shell $(LLVM_CONFIG) --bindir)
++CLANG := $(LLVM_BINDIR)/clang
++OPT   := $(LLVM_BINDIR)/opt
++LLC   := $(LLVM_BINDIR)/llc
++
++# =============================
++# Linux RISC-V toolchain
++# =============================
++RISCV_GCC     ?= /usr/bin/riscv64-linux-gnu-gcc
++GCC           ?= $(RISCV_GCC)
++RISCV_TRIPLE  ?= riscv64-linux-gnu
++RISCV_ARCH    ?= rv64gc
++RISCV_ABI     ?= lp64d
++
++# Debian/Ubuntu cross toolchains often report sysroot as "/" (multiarch layout).
++# Prefer --gcc-toolchain over --sysroot in that case.
++RISCV_PREFIX  ?= $(shell dirname $(shell dirname $(shell $(RISCV_GCC) -print-libgcc-file-name)))
++
++OBJDUMP       ?= riscv64-linux-gnu-objdump
++
++# =============================
++# Flags (Linux user-space)
++# =============================
++CFLAGS  ?= -std=gnu99 -O2 -Wall -Wextra
++CFLAGS  += -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI)
++# Helps keep call/ret structure stable for microbenchmarks
++CFLAGS  += -fno-omit-frame-pointer
++
++# Add include paths / defines if needed (e.g., -DPRINCE_OPCODE=1)
++CPPFLAGS ?=
++
++# Link flags:
++# - Default: dynamic (recommended on Linux rootfs)
++# - For static: make LDFLAGS=-static (may require static libc availability)
++LDFLAGS += -static  
++
++# =============================
++# Apps / sources
++# =============================
++PROGRAMS ?= test
++APPS := $(PROGRAMS)
++
++.SECONDARY:
++.PHONY: all clean asm obj
++
++all: $(addsuffix .linux.riscv,$(APPS))
++
++# =============================
++# Link final Linux ELF
++# =============================
++%.linux.riscv: %.riscv.o pac_runtime.o
++	@echo "=== [linux] Linking $@ ==="
++	$(GCC) $(LDFLAGS) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++		$^ -o $@
++
++# =============================
++# Compile C -> object with Clang targeting Linux
++# =============================
++%.riscv.o: %.c
++	@echo "=== [linux] Compiling $< ==="
++	$(CLANG) -O2 -c \
++	         -target $(RISCV_TRIPLE) \
++	         -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++	         --gcc-toolchain=$(RISCV_PREFIX) \
++	         $(CPPFLAGS) $(CFLAGS) \
++	         $< -o $@
++	@echo "=== [linux] Disassembling $@ (leaf snippet) ==="
++	@$(OBJDUMP) -d $@ | sed -n '/<leaf>:/,+40p' || true
++
++# Assembly dump (optional)
++%.riscv.s: %.c
++	@echo "=== [linux] Compiling $< to assembly ==="
++	$(CLANG) -O2 -S \
++	         -target $(RISCV_TRIPLE) \
++	         -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++	         --gcc-toolchain=$(RISCV_PREFIX) \
++	         $(CPPFLAGS) $(CFLAGS) \
++	         $< -o $@
++	@echo "=== [linux] Checking for key patterns in $@ ==="
++	@grep -nE 'rocc_prince_sign|rocc_prince_auth|\bret\b|jalr' $@ || true
++
++asm: $(addsuffix .riscv.s,$(APPS))
++obj: $(addsuffix .riscv.o,$(APPS))
++
++# =============================
++# ROCC / PAC runtime (Linux-safe only)
++# =============================
++# IMPORTANT:
++# pac_runtime.c must be Linux-safe (no libgloss/newlib startup, no baremetal-only syscalls).
++# It should ideally just provide inline asm wrappers / helpers.
++pac_runtime.o: pac_runtime.c pac_runtime.h
++	@echo "=== [linux] Compiling pac_runtime.c ==="
++	$(CLANG) -O2 -c \
++	         -target $(RISCV_TRIPLE) \
++	         -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++	         --gcc-toolchain=$(RISCV_PREFIX) \
++	         $(CPPFLAGS) $(CFLAGS) \
++	         $< -o $@
++
++clean:
++	rm -f *.o *.s *.ll *.mir
++	rm -f $(addsuffix .riscv.o,$(APPS)) $(addsuffix .riscv.s,$(APPS))
++	rm -f $(addsuffix .linux.riscv,$(APPS))
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++##### Makefile for Verilator with IR and MIR
++# -include config.mk
++
++# # Disable built-in suffix/implicit rules so host 'as' isn't used accidentally.
++# .SUFFIXES:
++# MAKEFLAGS += -rR
++
++# # =============================
++# # LLVM tools (use your LLVM build)
++# # =============================
++# LLVM_CONFIG ?= /home/pac/llvm-project/build/bin/llvm-config
++# LLVM_BINDIR := $(shell $(LLVM_CONFIG) --bindir)
++# CLANG := $(LLVM_BINDIR)/clang
++# OPT   := $(LLVM_BINDIR)/opt
++# LLC   := $(LLVM_BINDIR)/llc
++
++# # =============================
++# # Pass plugins (.so)
++# # =============================
++# # IR pass (exports pipeline key: rocc-pac)
++# PAC_PASS_PLUGIN ?= /home/pac/llvm-project/build/lib/RoccPacReturnPass.so
++# PAC_PASSES      ?= rocc-pac
++# # PAC_PASS_PLUGIN ?= /home/pac/llvm-project/build/lib/RoccPacReturnLitePass.so
++# # PAC_PASSES      ?= rocc-pac-lite
++
++# # Your MIR pass is compiled in-tree into llc and registered as 'mir-set-ra'
++# MIR_SINGLE_PASS ?= mir-set-ra
++
++# # =============================
++# # RISC-V GCC toolchain (for linking/runtime)
++# # =============================
++# RISCV_GCC     ?= /home/pac/Desktop/lalit/rocket-modified/chipyard/.conda-env/riscv-tools/bin/riscv64-unknown-elf-gcc
++# GCC           ?= $(RISCV_GCC)
++# RISCV_TRIPLE  ?= riscv64-unknown-elf
++# RISCV_ARCH    ?= rv64gc
++# RISCV_ABI     ?= lp64d
++# RISCV_MATTR   ?= +m,+a,+f,+d,+c
++# RISCV_SYSROOT ?= $(shell $(RISCV_GCC) --print-sysroot)
++# RISCV_PREFIX  ?= $(shell dirname $(shell dirname $(shell $(RISCV_GCC) -print-libgcc-file-name)))
++# OBJDUMP       ?= $(RISCV_TRIPLE)-objdump
++
++# # Core compile/link flags
++# CFLAGS  ?= -std=gnu99 -O1 -Wall
++# CFLAGS  += -fno-common -fno-builtin -ffreestanding -mcmodel=medany
++# LDFLAGS ?= -static
++
++# # =============================
++# # Chipyard libgloss (crt0/specs/linker)
++# # =============================
++# LIBGLOSS_DIR := /home/pac/Desktop/lalit/rocket-modified/chipyard/tests
++# include $(LIBGLOSS_DIR)/libgloss.mk
++
++# LIBGLOSS_LINK_FLAGS :=
++# ifdef libgloss_ldflags
++#   LIBGLOSS_LINK_FLAGS += $(libgloss_ldflags)
++# endif
++# ifdef libgloss_specs
++#   LIBGLOSS_LINK_FLAGS += --specs=$(libgloss_specs)
++# endif
++# ifdef libgloss_linker_script
++#   LIBGLOSS_LINK_FLAGS += -T $(libgloss_linker_script)
++# endif
++# # De-dup specs if libgloss already injected them
++# LIBGLOSS_LINK_FLAGS_NO_SPECS := $(filter-out -specs=% --specs=%,$(LIBGLOSS_LINK_FLAGS))
++
++# # =============================
++# # Apps / sources
++# # =============================
++# PROGRAMS ?= test
++# APPS := $(PROGRAMS)
++
++# # Keep intermediates to inspect IR/MIR/obj
++# .SECONDARY:
++
++# .PHONY: all clean distclean riscv-llvm asm obj mir-pass ll mir
++
++# # =============================
++# # Top-level targets
++# # =============================
++# all: riscv-llvm
++# riscv-llvm: $(addsuffix .llvm.riscv,$(APPS))
++
++# # Final ELF (link with GCC + libgloss)
++# %.llvm.riscv: %.riscv.o pac_runtime.o $(libgloss)
++# 	@echo "=== [riscv-llvm] Linking $@ (GCC + libgloss) ==="
++# 	$(GCC) $(LDFLAGS) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) -mcmodel=medany \
++# 		$^ -o $@ $(LIBGLOSS_LINK_FLAGS_NO_SPECS)
++
++# # =============================
++# # MIR flow: .ll -> (isel) .mir -> run MIR pass (or produce asm/obj)
++# # =============================
++
++# # 1) Instruction-select only → produce .mir
++# #    Generate MIR from the PAC-instrumented and optimized IR (.riscv.opt.ll).
++# %.riscv.isel.mir: %.riscv.opt.ll
++# 	@echo "=== [riscv-llvm] Instruction select → MIR: $< ==="
++# 	$(LLC) -mtriple=$(RISCV_TRIPLE) -mattr=$(RISCV_MATTR) \
++# 	       -relocation-model=static -stop-after=instruction-select \
++# 	       -o $@ $<
++
++# # 2) Single-pass test on MIR (no code emission)
++# #    Mirrors: llc --passes=mir-set-ra input.mir -o /dev/null
++# %.riscv.mirpass: %.riscv.isel.mir
++# 	@echo "=== [riscv-llvm] Running MIR pass only: $(MIR_SINGLE_PASS) on $< ==="
++# 	$(LLC) --passes=$(MIR_SINGLE_PASS) -o /dev/null $<
++# 	@echo "=== [riscv-llvm] Done (pass ran; no code emitted). ==="
++
++# # Convenience: run single-pass test for all apps
++# mir-pass: $(addsuffix .riscv.mirpass,$(APPS))
++
++# # 3a) Produce assembly from MIR using the target's default pipeline
++# #     Your in-tree 'mir-set-ra' runs automatically if wired in PassConfig.
++# %.riscv.s: %.riscv.isel.mir
++# 	@echo "=== [riscv-llvm] MIR → ASM (default pipeline) ==="
++# 	$(LLC) -filetype=asm -o $@ $<
++# 	@echo "=== grep for the shadow load into ra ==="
++# 	@grep -nE '__pac_ra_shadow|\blui\b|\baddi\b|ld[[:space:]]+x1\b|\bret\b|jalr' $@ || true
++
++# # 3b) Produce object from MIR using the default pipeline (preferred)
++# %.riscv.o: %.riscv.isel.mir
++# 	@echo "=== [riscv-llvm] MIR → OBJ (default pipeline) ==="
++# 	$(LLC) -filetype=obj -o $@ $<
++
++# # 3c) (Optional) Assemble .riscv.s → .riscv.o using the RISC-V toolchain (never host 'as')
++# #     Only used if you explicitly build .riscv.s first and then want .riscv.o
++# %.riscv.o: %.riscv.s
++# 	@echo "=== [riscv-llvm] Assembling RISC-V ASM → OBJ with $(GCC) ==="
++# 	$(GCC) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) -mcmodel=medany -c $< -o $@
++
++# asm: $(addsuffix .riscv.s,$(APPS))
++# obj: $(addsuffix .riscv.o,$(APPS))
++
++# # =============================
++# # IR pass: insert PAC instrumentation
++# # =============================
++# %.riscv.ra.ll: %.riscv.ll
++# 	@echo "=== [riscv-llvm] Inserting RA protection ($(strip $(PAC_PASSES))) ==="
++# 	$(OPT) -load-pass-plugin $(PAC_PASS_PLUGIN) -passes='$(strip $(PAC_PASSES)),verify' $< -S -o $@
++
++# # Optimize instrumented IR
++# %.riscv.opt.ll: %.riscv.ra.ll
++# 	@echo "=== [riscv-llvm] Optimizing IR (O1) ==="
++# 	$(OPT) -O1 $< -S -o $@
++
++# # Generate unoptimized IR for RISC-V target (headers via sysroot/toolchain)
++# %.riscv.ll: %.c
++# 	@echo "=== [riscv-llvm] Generating unoptimized LLVM IR: $< ==="
++# 	$(CLANG) -O1 -S -emit-llvm \
++# 	         -target $(RISCV_TRIPLE) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++# 	         --gcc-toolchain=$(RISCV_PREFIX) --sysroot=$(RISCV_SYSROOT) \
++# 	         -ffreestanding -fno-builtin -fno-common -mcmodel=medany \
++# 	         -I$(RISCV_SYSROOT)/include -I$(RISCV_SYSROOT)/include/newlib \
++# 	         $< -o $@
++
++# # =============================
++# # ROCC runtime
++# # =============================
++# pac_runtime.o: pac_runtime.c pac_runtime.h
++# 	$(GCC) $(CFLAGS) -c $< -o $@
++
++# # =============================
++# # Housekeeping
++# # =============================
++# clean:
++# 	rm -f *.o *.s
++# 	rm -f $(addsuffix .riscv.ll,$(APPS)) \
++# 	      $(addsuffix .riscv.ra.ll,$(APPS)) \
++# 	      $(addsuffix .riscv.opt.ll,$(APPS)) \
++# 	      $(addsuffix .riscv.isel.mir,$(APPS)) \
++# 	      $(addsuffix .riscv.mirpass,$(APPS)) \
++# 	      $(addsuffix .riscv.o,$(APPS))
++# 	rm -f $(addsuffix .llvm.riscv,$(APPS))
++# 	$(if $(libgloss),rm -rf $(libgloss_builddir)/)
++
++# distclean: clean
++# 	@true
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++# #for linux
++
++# -include config.mk
++
++# .SUFFIXES:
++# MAKEFLAGS += -rR
++
++# # =============================
++# # LLVM tools (your local build)
++# # =============================
++# LLVM_CONFIG ?= /home/pac/llvm-project/build/bin/llvm-config
++# LLVM_BINDIR := $(shell $(LLVM_CONFIG) --bindir)
++# CLANG := $(LLVM_BINDIR)/clang
++# OPT   := $(LLVM_BINDIR)/opt
++# LLC   := $(LLVM_BINDIR)/llc
++
++# # =============================
++# # PAC IR pass plugin
++# # =============================
++# PAC_PASS_PLUGIN ?= /home/pac/llvm-project/build/lib/RoccPacReturnPass.so
++# PAC_PASSES      ?= rocc-pac
++
++# # Single MIR pass registered in llc
++# MIR_SINGLE_PASS ?= mir-set-ra
++
++# # =============================
++# # RISC-V Linux toolchain
++# # =============================
++# RISCV_GCC     ?= /home/pac/Desktop/lalit/rocket-modified/chipyard/.conda-env/riscv-tools/bin/riscv64-unknown-linux-gnu-gcc
++# GCC           ?= $(RISCV_GCC)
++# RISCV_TRIPLE  ?= riscv64-unknown-linux-gnu
++# RISCV_ARCH    ?= rv64gc
++# RISCV_ABI     ?= lp64d
++# RISCV_MATTR   ?= +m,+a,+f,+d,+c
++# RISCV_SYSROOT := $(shell $(RISCV_GCC) --print-sysroot)
++# RISCV_PREFIX  := $(shell dirname $(shell dirname $(shell $(RISCV_GCC) -print-libgcc-file-name)))
++# OBJDUMP       ?= $(RISCV_TRIPLE)-objdump
++
++# # =============================
++# # Build flags (Linux user-space)
++# # =============================
++# # NOTE: No libgloss, no freestanding, no bare-metal specs/scripts
++# override CFLAGS  := -std=gnu99 -O2 -Wall -Wextra -fno-omit-frame-pointer \
++#                     -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI)
++# override LDFLAGS := -static
++
++# # Optional: choose your RoCC opcode (must match Scala build)
++# # e.g., OpcodeSet.custom1 => -DPRINCE_OPCODE=1
++# CFLAGS += -DPRINCE_OPCODE=1
++
++# # =============================
++# # Apps / sources
++# # =============================
++# PROGRAMS ?= test
++# APPS := $(PROGRAMS)
++# .SECONDARY:
++
++# .PHONY: all clean distclean riscv-llvm asm obj mir-pass ll mir
++
++# # =============================
++# # Top-level targets
++# # =============================
++# all: riscv-llvm
++# riscv-llvm: $(addsuffix .llvm.riscv,$(APPS))
++
++# # Final ELF (Linux static)
++# %.llvm.riscv: %.riscv.o pac_runtime.o
++# 	@echo "=== [riscv-llvm] Linking (Linux static): $@ ==="
++# 	$(GCC) $(LDFLAGS) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) $^ -o $@
++
++# # =============================
++# # MIR flow: .ll -> (isel) .mir -> passes -> obj/asm
++# # =============================
++
++# # 1) Instruction-select to MIR
++# %.riscv.isel.mir: %.riscv.opt.ll
++# 	@echo "=== [riscv-llvm] Instruction select → MIR: $< ==="
++# 	$(LLC) -mtriple=$(RISCV_TRIPLE) -mattr=$(RISCV_MATTR) \
++# 	       -relocation-model=static -stop-after=instruction-select \
++# 	       -o $@ $<
++
++# # 2) Run a single MIR pass (no output artifact besides status)
++# %.riscv.mirpass: %.riscv.isel.mir
++# 	@echo "=== [riscv-llvm] Running MIR pass: $(MIR_SINGLE_PASS) on $< ==="
++# 	$(LLC) --passes=$(MIR_SINGLE_PASS) -o /dev/null $<
++# 	@echo "=== [riscv-llvm] Done. ==="
++
++# mir-pass: $(addsuffix .riscv.mirpass,$(APPS))
++
++# # 3a) MIR → ASM (optional)
++# %.riscv.s: %.riscv.isel.mir
++# 	@echo "=== [riscv-llvm] MIR → ASM (default pipeline) ==="
++# 	$(LLC) -filetype=asm -o $@ $<
++# 	@echo "=== grep for PAC patterns (optional) ==="
++# 	@grep -nE '__pac_ra_shadow|\blui\b|\baddi\b|ld[[:space:]]+x1\b|\bret\b|jalr' $@ || true
++
++# # 3b) MIR → OBJ (preferred)
++# %.riscv.o: %.riscv.isel.mir
++# 	@echo "=== [riscv-llvm] MIR → OBJ (default pipeline) ==="
++# 	$(LLC) -filetype=obj -o $@ $<
++
++# # 3c) Assemble .s → .o with the Linux toolchain (if you used .s)
++# %.riscv.o: %.riscv.s
++# 	@echo "=== [riscv-llvm] ASM → OBJ with $(GCC) (Linux) ==="
++# 	$(GCC) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) -c $< -o $@
++
++# asm: $(addsuffix .riscv.s,$(APPS))
++# obj: $(addsuffix .riscv.o,$(APPS))
++
++# # =============================
++# # IR pass: PAC instrumentation
++# # =============================
++# %.riscv.ra.ll: %.riscv.ll
++# 	@echo "=== [riscv-llvm] Insert PAC passes: $(strip $(PAC_PASSES)) ==="
++# 	$(OPT) -load-pass-plugin $(PAC_PASS_PLUGIN) -passes='$(strip $(PAC_PASSES)),verify' $< -S -o $@
++
++# # Optimize instrumented IR
++# %.riscv.opt.ll: %.riscv.ra.ll
++# 	@echo "=== [riscv-llvm] Optimize IR (O1) ==="
++# 	$(OPT) -O1 $< -S -o $@
++
++# # Generate unoptimized LLVM IR targeting Linux (uses Linux sysroot/toolchain)
++# %.riscv.ll: %.c
++# 	@echo "=== [riscv-llvm] Emit LLVM IR for Linux: $< ==="
++# 	$(CLANG) -O1 -S -emit-llvm \
++# 	         -target $(RISCV_TRIPLE) -march=$(RISCV_ARCH) -mabi=$(RISCV_ABI) \
++# 	         --gcc-toolchain=$(RISCV_PREFIX) --sysroot=$(RISCV_SYSROOT) \
++# 	         -fno-omit-frame-pointer \
++# 	         $< -o $@
++
++# # =============================
++# # Runtime
++# # =============================
++# pac_runtime.o: pac_runtime.c pac_runtime.h
++# 	$(GCC) $(CFLAGS) -c $< -o $@
++
++# # =============================
++# # Housekeeping
++# # =============================
++# clean:
++# 	rm -f *.o *.s
++# 	rm -f $(addsuffix .riscv.ll,$(APPS)) \
++# 	      $(addsuffix .riscv.ra.ll,$(APPS)) \
++# 	      $(addsuffix .riscv.opt.ll,$(APPS)) \
++# 	      $(addsuffix .riscv.isel.mir,$(APPS)) \
++# 	      $(addsuffix .riscv.mirpass,$(APPS)) \
++# 	      $(addsuffix .riscv.o,$(APPS))
++# 	rm -f $(addsuffix .llvm.riscv,$(APPS))
++
++# distclean: clean
++# 	@true
+diff --git a/LIPPEN_tests/hpm.h b/LIPPEN_tests/hpm.h
+new file mode 100644
+index 000000000000..7f149d7cf76c
+--- /dev/null
++++ b/LIPPEN_tests/hpm.h
+@@ -0,0 +1,126 @@
++#ifndef _RISCV_HPM_H
++#define _RISCV_HPM_H
++
++#include <stdint.h>
++#include <inttypes.h>
++#include <stdio.h>
++
++#ifdef __riscv
++
++#define csr_read(reg) ({ \
++    unsigned long __tmp; \
++    __asm__ __volatile__ ("csrr %0, " #reg : "=r"(__tmp)); \
++    __tmp; })
++
++#define csr_write(reg, val) ({ \
++    __asm__ __volatile__ ("csrw " #reg ", %0" :: "rK"(val)); })
++
++
++#define HPM_NCOUNTERS           16
++
++#define HPM_EVENTSET_BITS       8
++#define HPM_EVENTSET_MASK       ((1U << HPM_EVENTSET_BITS) - 1)
++#define HPM_EVENT(event, set)   ((1U << ((event) + HPM_EVENTSET_BITS)) | ((set) & HPM_EVENTSET_MASK))
++
++struct hpm {
++    uint64_t data[HPM_NCOUNTERS];
++};
++
++static inline void hpm_read(struct hpm *hpm)
++{
++    hpm->data[0] = csr_read(cycle);
++    hpm->data[1] = csr_read(instret);
++    hpm->data[2] = csr_read(hpmcounter3);
++    hpm->data[3] = csr_read(hpmcounter4);
++    hpm->data[4] = csr_read(hpmcounter5);
++    hpm->data[5] = csr_read(hpmcounter6);
++    hpm->data[6] = csr_read(hpmcounter16);
++    hpm->data[7] = csr_read(hpmcounter7);
++    hpm->data[8] = csr_read(hpmcounter8);
++    hpm->data[9] = csr_read(hpmcounter9);
++    hpm->data[10] = csr_read(hpmcounter10);
++    hpm->data[11] = csr_read(hpmcounter11);
++    hpm->data[12] = csr_read(hpmcounter12);
++    hpm->data[13] = csr_read(hpmcounter13);
++    hpm->data[14] = csr_read(hpmcounter14);
++    hpm->data[15] = csr_read(hpmcounter15);
++}
++
++static struct hpm hpm_data0;
++
++/* Initialize Rocket hardware performance monitor */
++static inline void hpm_init(void)
++{
++    csr_write(mhpmevent3,  HPM_EVENT(1, 0)); // loads
++    csr_write(mhpmevent4,  HPM_EVENT(2, 0)); // stores
++
++    csr_write(mhpmevent5,  HPM_EVENT(0, 2)); // I$ miss
++    csr_write(mhpmevent6,  HPM_EVENT(1, 2)); // D$ regular miss
++    csr_write(mhpmevent16, HPM_EVENT(6, 2)); // D$ regular miss
++    csr_write(mhpmevent7,  HPM_EVENT(2, 2)); // D$ release
++    csr_write(mhpmevent8,  HPM_EVENT(3, 2)); // ITLB miss
++    csr_write(mhpmevent9,  HPM_EVENT(4, 2)); // DTLB miss
++    csr_write(mhpmevent10, HPM_EVENT(5, 2)); // L2 TLB miss
++
++    csr_write(mhpmevent11, HPM_EVENT(6, 0)); // branches
++    csr_write(mhpmevent12, HPM_EVENT(5, 1)); // branch misprediction
++
++    csr_write(mhpmevent13, HPM_EVENT(0, 1)); // load-use interlock
++    csr_write(mhpmevent14, HPM_EVENT(3, 1)); // I$ blocked
++    csr_write(mhpmevent15, HPM_EVENT(4, 1)); // D$ blocked
++
++    hpm_read(&hpm_data0);
++}
++
++/* Dump performance counter data */
++static inline void hpm_print(void)
++{
++    static const char *label[] = {
++        "cycles",
++        "instret",
++        "loads",
++        "stores",
++        "I$ miss",
++        "D$ regular miss",
++        "D$ prefetch miss",
++        "D$ release",
++        "ITLB miss",
++        "DTLB miss",
++        "L2 TLB miss",
++        "branches",
++        "mispredicts",
++        "load-use interlock",
++        "I$ blocked",
++        "D$ blocked",
++    };
++    _Static_assert((sizeof(label) / sizeof(char *)) == HPM_NCOUNTERS);
++    struct hpm hpm_data1;
++    char buf[HPM_NCOUNTERS*32];
++    char *bufp;
++    int i;
++
++    hpm_read(&hpm_data1);
++    for (i = 0, bufp = buf; i < HPM_NCOUNTERS; i++) {
++        int n;
++        n = sprintf(bufp, "%18s : %" PRIu64 "\n", label[i], hpm_data1.data[i] - hpm_data0.data[i]);
++        if (n < 0)
++            break;
++        bufp += n;
++    }
++    fputs(buf, stdout);
++}
++
++#else /* !__riscv */
++
++static inline void hpm_init()
++{
++}
++
++static inline void hpm_print()
++{
++}
++
++#endif /* __riscv */
++
++#endif /* _RISCV_HPM_H */
++
+diff --git a/LIPPEN_tests/pac_runtime.c b/LIPPEN_tests/pac_runtime.c
+new file mode 100644
+index 000000000000..cb528c788938
+--- /dev/null
++++ b/LIPPEN_tests/pac_runtime.c
+@@ -0,0 +1,137 @@
++#include <stdint.h>
++#include <stdio.h>          // optional (for debug print)
++#include "rocc.h"
++#include "pac_runtime.h"
++
++#define GOOD_HI 0x0123456789ABCDEFULL
++#define GOOD_LO 0x0FEDCBA987654321ULL
++
++// The actual initializer. Keep it visible and non-inlined.
++__attribute__((noinline, used))
++static void pac_set_key_early_impl(void) {
++  prince_set_key(GOOD_HI, GOOD_LO);
++  __asm__ volatile("fence iorw, iorw" ::: "memory");
++  // Optional proof it ran:
++  printf("pac_runtime: key set (ctor)\n");
++}
++
++// 1) Normal constructor path (runs via .init_array)
++__attribute__((constructor(50), used, noinline))
++static void pac_set_key_early_ctor(void) {
++  pac_set_key_early_impl();
++}
++
++// 2) Backup: place a pointer in .preinit_array so it runs even earlier.
++// Some crt flows call __libc_init_array() which processes preinit+init arrays.
++// Mark the array used so it can't be GC'd.
++__attribute__((used, section(".preinit_array")))
++static void (*const __pac_preinit_entry[])(void) = { pac_set_key_early_impl };
++
++__attribute__((noinline))
++uintptr_t prince_sign(uintptr_t plaintext, uint64_t modifier) {
++  uintptr_t result = 0;
++  ROCC_INSTRUCTION_DSS(1, result, plaintext, modifier, 1);
++  return result;
++}
++
++__attribute__((noinline))
++uintptr_t prince_auth(uintptr_t ciphertext, uint64_t modifier) {
++  uintptr_t data_out = 0;
++  ROCC_INSTRUCTION_DSS(1, data_out, ciphertext, modifier, 0);
++  return data_out;
++}
++
++__attribute__((noinline))
++void prince_set_key(uint64_t key_hi, uint64_t key_lo) {
++  ROCC_INSTRUCTION_SS(1, key_hi, key_lo, 2);
++  __asm__ volatile("fence iorw, iorw" ::: "memory");
++}
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// #include <stdint.h>
++// #include <stdio.h>          // optional (for debug print)
++// #include "rocc.h"
++// #include "pac_runtime.h"
++
++// #define GOOD_HI 0x0123456789ABCDEFULL
++// #define GOOD_LO 0x0FEDCBA987654321ULL
++
++// // The actual initializer. Keep it visible and non-inlined.
++// __attribute__((noinline, used))
++// static void pac_set_key_early_impl(void) {
++//   prince_set_key(GOOD_HI, GOOD_LO);
++//   __asm__ volatile("fence iorw, iorw" ::: "memory");
++//   // Optional proof it ran:
++//   printf("pac_runtime: key set (ctor)\n");
++// }
++
++// // 1) Normal constructor path (runs via .init_array)
++// __attribute__((constructor(50), used, noinline))
++// static void pac_set_key_early_ctor(void) {
++//   pac_set_key_early_impl();
++// }
++
++// // 2) Backup: place a pointer in .preinit_array so it runs even earlier.
++// // Some crt flows call __libc_init_array() which processes preinit+init arrays.
++// // Mark the array used so it can't be GC'd.
++// __attribute__((used, section(".preinit_array")))
++// static void (*const __pac_preinit_entry[])(void) = { pac_set_key_early_impl };
++
++// __attribute__((noinline))
++// uintptr_t prince_sign(uintptr_t plaintext,
++//                       uint64_t modifier __attribute__((unused))) {
++//   uintptr_t result;
++
++//   // Bind this C variable to the stack pointer register x2 ("sp").
++//   register uintptr_t sp_reg asm("sp");
++
++//   // RoCC: rs1 = plaintext, rs2 = sp_reg (SP), funct = 1 (encrypt/sign)
++//   ROCC_INSTRUCTION_DSS(1, result, plaintext, sp_reg, 1);
++//   return result;
++// }
++
++// __attribute__((noinline))
++// uintptr_t prince_auth(uintptr_t ciphertext,
++//                       uint64_t modifier __attribute__((unused))) {
++//   uintptr_t data_out;
++
++//   // Again, use SP as the modifier source.
++//   register uintptr_t sp_reg asm("sp");
++
++//   // RoCC: rs1 = ciphertext (signed RA), rs2 = sp_reg (SP), funct = 0 (decrypt/auth)
++//   ROCC_INSTRUCTION_DSS(1, data_out, ciphertext, sp_reg, 0);
++//   return data_out;
++// }
++
++// __attribute__((noinline))
++// void prince_set_key(uint64_t key_hi, uint64_t key_lo) {
++//   ROCC_INSTRUCTION_SS(1, key_hi, key_lo, 2);
++//   __asm__ volatile("fence iorw, iorw" ::: "memory");
++// }
+diff --git a/LIPPEN_tests/pac_runtime.h b/LIPPEN_tests/pac_runtime.h
+new file mode 100644
+index 000000000000..a809121731d2
+--- /dev/null
++++ b/LIPPEN_tests/pac_runtime.h
+@@ -0,0 +1,17 @@
++#ifndef PAC_RUNTIME_H
++#define PAC_RUNTIME_H
++#include <stdint.h>
++
++#ifdef __cplusplus
++extern "C" {
++#endif
++
++uintptr_t prince_sign(uintptr_t plaintext, uint64_t modifier);
++uintptr_t prince_auth(uintptr_t ciphertext, uint64_t modifier);
++void prince_set_key(uint64_t key_hi, uint64_t key_lo);
++
++#ifdef __cplusplus
++}
++#endif
++#endif
++
+diff --git a/LIPPEN_tests/rocc.h b/LIPPEN_tests/rocc.h
+new file mode 100644
+index 000000000000..fd6da6a909ca
+--- /dev/null
++++ b/LIPPEN_tests/rocc.h
+@@ -0,0 +1,98 @@
++// Based on code by Schuyler Eldridge. Copyright (c) Boston University
++// https://github.com/seldridge/rocket-rocc-examples/blob/master/src/main/c/rocc.h
++
++#ifndef SRC_MAIN_C_ROCC_H
++#define SRC_MAIN_C_ROCC_H
++
++#include <stdint.h>
++
++#define STR1(x) #x
++#define STR(x) STR1(x)
++#define EXTRACT(a, size, offset) (((~(~0 << size) << offset) & a) >> offset)
++
++#define CUSTOMX_OPCODE(x) CUSTOM_ ## x
++#define CUSTOM_0 0b0001011
++#define CUSTOM_1 0b0101011
++#define CUSTOM_2 0b1011011
++#define CUSTOM_3 0b1111011
++
++#define CUSTOMX(X, xd, xs1, xs2, rd, rs1, rs2, funct) \
++  CUSTOMX_OPCODE(X)                     |             \
++  (rd                 << (7))           |             \
++  (xs2                << (7+5))         |             \
++  (xs1                << (7+5+1))       |             \
++  (xd                 << (7+5+2))       |             \
++  (rs1                << (7+5+3))       |             \
++  (rs2                << (7+5+3+5))     |             \
++  (EXTRACT(funct, 7, 0) << (7+5+3+5+5))
++
++// Standard macro that passes rd, rs1, and rs2 via registers
++#define ROCC_INSTRUCTION_DSS(X, rd, rs1, rs2, funct) \
++	ROCC_INSTRUCTION_R_R_R(X, rd, rs1, rs2, funct, 10, 11, 12)
++
++#define ROCC_INSTRUCTION_DS(X, rd, rs1, funct) \
++	ROCC_INSTRUCTION_R_R_I(X, rd, rs1, 0, funct, 10, 11)
++
++#define ROCC_INSTRUCTION_D(X, rd, funct) \
++	ROCC_INSTRUCTION_R_I_I(X, rd, 0, 0, funct, 10)
++
++#define ROCC_INSTRUCTION_SS(X, rs1, rs2, funct) \
++	ROCC_INSTRUCTION_I_R_R(X, 0, rs1, rs2, funct, 11, 12)
++
++#define ROCC_INSTRUCTION_S(X, rs1, funct) \
++	ROCC_INSTRUCTION_I_R_I(X, 0, rs1, 0, funct, 11)
++
++#define ROCC_INSTRUCTION(X, funct) \
++	ROCC_INSTRUCTION_I_I_I(X, 0, 0, 0, funct)
++
++// rd, rs1, and rs2 are data
++// rd_n, rs_1, and rs2_n are the register numbers to use
++#define ROCC_INSTRUCTION_R_R_R(X, rd, rs1, rs2, funct, rd_n, rs1_n, rs2_n) { \
++    register uint64_t rd_  asm ("x" # rd_n);                                 \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;               \
++    register uint64_t rs2_ asm ("x" # rs2_n) = (uint64_t) rs2;               \
++    asm volatile (                                                           \
++        ".word " STR(CUSTOMX(X, 1, 1, 1, rd_n, rs1_n, rs2_n, funct)) "\n\t"  \
++        : "=r" (rd_)                                                         \
++        : [_rs1] "r" (rs1_), [_rs2] "r" (rs2_));                             \
++    rd = rd_;                                                                \
++  }
++
++#define ROCC_INSTRUCTION_R_R_I(X, rd, rs1, rs2, funct, rd_n, rs1_n) {     \
++    register uint64_t rd_  asm ("x" # rd_n);                              \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;            \
++    asm volatile (                                                        \
++        ".word " STR(CUSTOMX(X, 1, 1, 0, rd_n, rs1_n, rs2, funct)) "\n\t" \
++        : "=r" (rd_) : [_rs1] "r" (rs1_));                                \
++    rd = rd_;                                                             \
++  }
++
++#define ROCC_INSTRUCTION_R_I_I(X, rd, rs1, rs2, funct, rd_n) {           \
++    register uint64_t rd_  asm ("x" # rd_n);                             \
++    asm volatile (                                                       \
++        ".word " STR(CUSTOMX(X, 1, 0, 0, rd_n, rs1, rs2, funct)) "\n\t"  \
++        : "=r" (rd_));                                                   \
++    rd = rd_;                                                            \
++  }
++
++#define ROCC_INSTRUCTION_I_R_R(X, rd, rs1, rs2, funct, rs1_n, rs2_n) {    \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;            \
++    register uint64_t rs2_ asm ("x" # rs2_n) = (uint64_t) rs2;            \
++    asm volatile (                                                        \
++        ".word " STR(CUSTOMX(X, 0, 1, 1, rd, rs1_n, rs2_n, funct)) "\n\t" \
++        :: [_rs1] "r" (rs1_), [_rs2] "r" (rs2_));                         \
++  }
++
++#define ROCC_INSTRUCTION_I_R_I(X, rd, rs1, rs2, funct, rs1_n) {         \
++    register uint64_t rs1_ asm ("x" # rs1_n) = (uint64_t) rs1;          \
++    asm volatile (                                                      \
++        ".word " STR(CUSTOMX(X, 0, 1, 0, rd, rs1_n, rs2, funct)) "\n\t" \
++        :: [_rs1] "r" (rs1_));                                          \
++  }
++
++#define ROCC_INSTRUCTION_I_I_I(X, rd, rs1, rs2, funct) {                 \
++    asm volatile (                                                       \
++        ".word " STR(CUSTOMX(X, 0, 0, 0, rd, rs1, rs2, funct)) "\n\t" ); \
++  }
++
++#endif  // SRC_MAIN_C_ACCUMULATOR_H
+diff --git a/LIPPEN_tests/test.c b/LIPPEN_tests/test.c
+new file mode 100644
+index 000000000000..463cec32bfdc
+--- /dev/null
++++ b/LIPPEN_tests/test.c
+@@ -0,0 +1,843 @@
++// #include <stdio.h>
++// #include <stdlib.h>
++// #include <stdint.h>  // For uintptr_t
++// #include <unistd.h>
++
++
++
++// int foo(int a) {
++//     printf(" I am foo %p\n", (void *)&foo);     
++//     return a * 2;
++// }
++
++// int bar(int b) {
++//     printf(" I am bar %p\n", (void *)&bar);     
++//     return b + 1;
++// }
++
++// int main() {
++//     int x = 5;
++//     int y = foo(x);
++//     int z = bar(y);
++//     printf("this is z %i", z);
++//     return 0;
++// }
++
++
++
++
++
++// #include <stdio.h>
++// #include <stdint.h>
++// #include <inttypes.h>
++// #include "pac_runtime.h"
++
++// #define GOOD_HI 0x0123456789ABCDEFULL
++// #define GOOD_LO 0x0FEDCBA987654321ULL
++// #define BAD_HI  0xDEADBEEFCAFEBABEULL
++// #define BAD_LO  0xBADC0FFEE0DDF00DULL
++
++// // IMPORTANT: volatile so the compiler reloads after the call to foo()
++// extern volatile uint64_t pac_ra_shadow_foo  __asm__("__pac_ra_shadow$foo");
++// extern volatile uint64_t pac_ret_shadow_foo __asm__("__pac_ret_shadow$foo");
++
++// int foo(int a) {
++//     printf(" I am foo %p\n", (void *)&foo);
++
++//     // Manual negative-test (pre-epilogue)
++//     uintptr_t ra  = (uintptr_t)__builtin_return_address(0);
++//     uint64_t  sig = prince_sign((uint64_t)ra, 0);
++
++//     prince_set_key(BAD_HI, BAD_LO);
++//     asm volatile("fence iorw, iorw" ::: "memory");
++
++//     uint64_t dec = prince_auth(sig, 0);
++//     printf("debug (manual, pre-epilogue): ra=0x%016" PRIxPTR " auth=0x%016" PRIx64 "\n", ra, dec);
++
++//     return a * 2;
++// }
++
++// int bar(int b) {
++//     printf(" I am bar %p\n", (void *)&bar);
++//     return b + 1;
++// }
++
++// int main(void) {
++//     prince_set_key(GOOD_HI, GOOD_LO);
++//     asm volatile("fence iorw, iorw" ::: "memory");
++
++//     // One-time sanity: addresses should match your objdump comments
++//     printf("addrs: &ra_shadow=%p &ret_shadow=%p\n",
++//            (void*)&pac_ra_shadow_foo, (void*)&pac_ret_shadow_foo);
++
++//     printf("main: calling foo...\n");
++//     int y = foo(5);
++
++//     // Prevent reordering/hoisting across the call
++//     asm volatile("" ::: "memory");
++
++//     // NOW the epilogue has run and the pass stored the shadows
++//     printf("main: foo shadows AFTER return: ra=0x%016" PRIx64
++//            " ret=0x%016" PRIx64 "\n", pac_ra_shadow_foo, pac_ret_shadow_foo);
++
++//     // Restore GOOD so libc keeps working if you continue
++//     prince_set_key(GOOD_HI, GOOD_LO);
++//     asm volatile("fence iorw, iorw" ::: "memory");
++
++//     printf("main: returned from foo, y=%d\n", y);
++//     int z = bar(y);
++//     printf("this is z %d\n", z);
++//     return 0;
++// }
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// #include <stdio.h>
++// #include <stdint.h>
++// #include "pac_runtime.h"
++// #include <inttypes.h>
++// #include <unistd.h>
++
++// #define GOOD_HI 0x0123456789ABCDEFULL
++// #define GOOD_LO 0x0FEDCBA987654321ULL
++// #define BAD_HI  0xDEADBEEFCAFEBABEULL
++// #define BAD_LO  0xBADC0FFEE0DDF00DULL
++
++// __attribute__((constructor(50), used, noinline))
++// static void pac_set_key_early(void) {
++//     prince_set_key(GOOD_HI, GOOD_LO);
++//     asm volatile("fence iorw, iorw" ::: "memory");
++//     printf("inside pac set key!\n");
++// }
++
++// // Make sure these functions are emitted and not inlined away:
++// __attribute__((noinline)) int foo(int a) {
++//     printf(" I am foo %p\n", (void *)&foo);
++
++//     // // Manual negative-test (pre-epilogue)
++//     // uintptr_t ra  = (uintptr_t)__builtin_return_address(0);
++//     // uint64_t  sig = prince_sign((uint64_t)ra, 0);
++
++//     prince_set_key(BAD_HI, BAD_LO);
++//     asm volatile("fence iorw, iorw" ::: "memory");
++
++//     // uint64_t dec = prince_auth(sig, 0);
++//     // printf("debug (manual, pre-epilogue): ra=0x%016" PRIxPTR " auth=0x%016" PRIx64 "\n", ra, dec);
++
++//     return a * 2;
++// }
++
++// __attribute__((noinline)) int bar(int b) {
++//     printf(" I am bar %p\n", (void *)&bar);
++//     return b + 1;
++// }
++
++// int main(void) {
++//     // Set GOOD key up front so entry signing uses GOOD
++//     prince_set_key(GOOD_HI, GOOD_LO);
++//     asm volatile("fence iorw, iorw" ::: "memory");
++
++//     printf("main: calling foo...\n");
++//     int y = foo(5);                    // <-- real call
++//     printf("main: returned from foo, y=%d\n", y);
++
++//     int z = bar(y);                    // <-- real call
++//     printf("this is z %d\n", z);
++
++//     _exit(0);
++//     //return 0;
++// }
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// // test.c
++// // RISC-V microbenchmark: return-address protection overhead (via your LLVM MachineFunction pass)
++// //
++// // Build two versions using your Makefile by swapping LLVM/opt/pass settings:
++// //   - unprotected: pass disabled
++// //   - protected:   pass enabled
++// //
++// // Run on your platform:
++// //   test.llvm.riscv [iters] [trials]
++// //
++// // Output reports cycles/(call+ret) using rdcycle.
++
++// #include <stdint.h>
++// #include <stdio.h>
++// #include <stdlib.h>
++
++// // Serialize a bit around timing.
++// // fence rw,rw orders memory ops; fence.i helps keep I-side effects stable for self-modifying code
++// // (not needed here, but harmless). You can drop fence.i if you prefer.
++// static inline void fence_all(void) {
++//     __asm__ __volatile__("fence rw, rw; fence.i" ::: "memory");
++// }
++
++// static inline uint64_t rdcycle64(void) {
++// #if defined(__riscv) && (__riscv_xlen == 64)
++//     uint64_t x;
++//     __asm__ __volatile__("rdcycle %0" : "=r"(x));
++//     return x;
++// #else
++//     // RV32 safe pattern (unlikely for your setup, but included for completeness).
++//     uint32_t hi0, lo, hi1;
++//     __asm__ __volatile__("rdcycleh %0" : "=r"(hi0));
++//     __asm__ __volatile__("rdcycle  %0" : "=r"(lo));
++//     __asm__ __volatile__("rdcycleh %0" : "=r"(hi1));
++//     if (hi0 != hi1) {
++//         __asm__ __volatile__("rdcycle %0" : "=r"(lo));
++//     }
++//     return ((uint64_t)hi1 << 32) | lo;
++// #endif
++// }
++
++// static int cmp_u64(const void *a, const void *b) {
++//     uint64_t ua = *(const uint64_t*)a, ub = *(const uint64_t*)b;
++//     return (ua > ub) - (ua < ub);
++// }
++
++// static double median_cyc_per_iter(uint64_t *samples_cyc, int n, uint64_t iters) {
++//     qsort(samples_cyc, (size_t)n, sizeof(uint64_t), cmp_u64);
++//     return (double)samples_cyc[n/2] / (double)iters;
++// }
++
++// // Keep a volatile dependency so compiler can’t collapse the loop.
++// static volatile uint64_t sink = 1;
++
++// // This is the hot call target. Your MachineFunction pass should instrument the return address here.
++// // noinline ensures an actual call/return.
++// // The local volatile array forces a real stack frame so RA save/restore behavior is exercised.
++// // __attribute__((noinline)) static uint64_t leaf(uint64_t x) {
++// //     volatile uint64_t tmp[2];
++// //     tmp[0] = x ^ 0x9e3779b97f4a7c15ULL;
++// //     tmp[1] = tmp[0] + (uint64_t)(uintptr_t)&tmp;
++
++// //     sink ^= tmp[1];
++// //     return sink;
++// // }
++// __attribute__((noinline)) static uint64_t leaf(uint64_t x) {
++//     volatile uint64_t tmp[2];
++//     tmp[0] = x ^ (x-5);
++//     return tmp[0];
++// }
++
++// int main(int argc, char **argv) {
++//     uint64_t iters  = (argc > 1) ? strtoull(argv[1], 0, 0) : 200000000ULL;
++//     int trials      = (argc > 2) ? atoi(argv[2]) : 7;
++//     if (trials < 1) trials = 1;
++
++//     uint64_t *samples = (uint64_t*)calloc((size_t)trials, sizeof(uint64_t));
++//     if (!samples) {
++//         printf("alloc failed\n");
++//         return 1;
++//     }
++
++//     // Warm-up (bring code/data into caches, stabilize predictors)
++//     for (int i = 0; i < 10000; i++) sink = leaf((uint64_t)i);
++
++//     for (int t = 0; t < trials; t++) {
++//         fence_all();
++//         uint64_t x  = (uint64_t)t + 1;
++//         uint64_t c0 = rdcycle64();
++
++//         for (uint64_t i = 0; i < iters; i++) {
++//             // One call + return per iteration.
++//             x = leaf(x);
++
++//             // Post-call work to defeat tail-call and keep dependency chain.
++//             x ^= (uint64_t)i;
++//         }
++
++//         uint64_t c1 = rdcycle64();
++//         samples[t] = c1 - c0;
++
++//         // Keep live
++//         sink ^= x;
++//     }
++
++//     double cyc_call = median_cyc_per_iter(samples, trials, iters);
++
++//     printf("Return-address microbenchmark (calls/returns)\n");
++//     printf("iters=%llu trials=%d\n", (unsigned long long)iters, trials);
++//     printf("median: %.3f cycles / (call+ret)\n", cyc_call);
++
++//     free(samples);
++//     return (int)(sink & 1);
++// }
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// test_recursive.c
++// RISC-V microbenchmark: recursive return-address protection overhead
++//
++// Usage:
++//   test.llvm.riscv [iters] [trials] [depth]
++//
++// Example:
++//   ./test.llvm.riscv 200000000 7 8
++//   ./test.llvm.riscv 200000000 7 16
++//
++// Output reports cycles/(top-level call+ret).
++// Each iteration performs `depth` nested calls internally.
++
++#include <stdint.h>
++#include <stdio.h>
++#include <stdlib.h>
++
++static inline void fence_all(void) {
++    __asm__ __volatile__("fence rw, rw; fence.i" ::: "memory");
++}
++
++static inline uint64_t rdcycle64(void) {
++#if defined(__riscv) && (__riscv_xlen == 64)
++    uint64_t x;
++    __asm__ __volatile__("rdcycle %0" : "=r"(x));
++    return x;
++#else
++    uint32_t hi0, lo, hi1;
++    __asm__ __volatile__("rdcycleh %0" : "=r"(hi0));
++    __asm__ __volatile__("rdcycle  %0" : "=r"(lo));
++    __asm__ __volatile__("rdcycleh %0" : "=r"(hi1));
++    if (hi0 != hi1) {
++        __asm__ __volatile__("rdcycle %0" : "=r"(lo));
++    }
++    return ((uint64_t)hi1 << 32) | lo;
++#endif
++}
++
++static int cmp_u64(const void *a, const void *b) {
++    uint64_t ua = *(const uint64_t*)a, ub = *(const uint64_t*)b;
++    return (ua > ub) - (ua < ub);
++}
++
++static double median_cyc_per_iter(uint64_t *samples_cyc, int n, uint64_t iters) {
++    qsort(samples_cyc, (size_t)n, sizeof(uint64_t), cmp_u64);
++    return (double)samples_cyc[n/2] / (double)iters;
++}
++
++static volatile uint64_t sink = 1;
++
++// Recursive version.
++// - noinline ensures real call/return
++// - volatile local array forces stack frame
++// - depth controls recursion depth
++__attribute__((noinline))
++static uint64_t leaf_recursive(uint64_t x, int depth) {
++    volatile uint64_t tmp[2];
++
++    tmp[0] = x ^ 0x9e3779b97f4a7c15ULL;
++    tmp[1] = tmp[0] + (uint64_t)(uintptr_t)&tmp;
++
++    sink ^= tmp[1];
++
++    if (depth > 0) {
++        // Prevent tail-call elimination by using result afterward
++        uint64_t r = leaf_recursive(sink, depth - 1);
++        sink ^= r;
++        return sink;
++    }
++
++    return sink;
++}
++// __attribute__((noinline))
++// static uint64_t leaf_recursive(uint64_t x, int depth) {
++//     volatile uint64_t tmp[2];
++//     sink = x ^ (x-5);
++
++//     if (depth > 0) {
++//         uint64_t r = leaf_recursive(sink, depth - 1);
++//         sink ^= r;
++//         return sink;
++//     }
++
++//     return sink;
++// }
++
++int main(int argc, char **argv) {
++    uint64_t iters  = (argc > 1) ? strtoull(argv[1], 0, 0) : 20000000ULL;
++    int trials      = (argc > 2) ? atoi(argv[2]) : 7;
++    int depth       = (argc > 3) ? atoi(argv[3]) : 38;
++
++    if (trials < 1) trials = 1;
++    if (depth < 0) depth = 0;
++
++    uint64_t *samples = (uint64_t*)calloc((size_t)trials, sizeof(uint64_t));
++    if (!samples) {
++        printf("alloc failed\n");
++        return 1;
++    }
++
++    // Warm-up
++    for (int i = 0; i < 10000; i++)
++        sink = leaf_recursive((uint64_t)i, depth);
++
++    for (int t = 0; t < trials; t++) {
++        fence_all();
++        uint64_t x  = (uint64_t)t + 1;
++        uint64_t c0 = rdcycle64();
++
++        for (uint64_t i = 0; i < iters; i++) {
++            // One top-level call per iteration,
++            // but depth nested calls inside.
++            x = leaf_recursive(x, depth);
++
++            // Post-call work to defeat tail-call and maintain dependency
++            x ^= (uint64_t)i;
++        }
++
++        uint64_t c1 = rdcycle64();
++        samples[t] = c1 - c0;
++
++        sink ^= x;
++    }
++
++    double cyc_per_iter = median_cyc_per_iter(samples, trials, iters);
++
++    printf("Recursive return-address microbenchmark\n");
++    printf("iters=%llu trials=%d depth=%d\n",
++           (unsigned long long)iters, trials, depth);
++    printf("median: %.3f cycles / (top-level call+ret)\n",
++           cyc_per_iter);
++
++    free(samples);
++    return (int)(sink & 1);
++}
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// // test_returns_only.c
++// // RISC-V microbenchmark: return-only overhead (recursive calls with timing around returns)
++// //
++// // Build two versions:
++// //   - unprotected: PAC pass disabled
++// //   - protected:   PAC pass enabled
++// //
++// // Run on your RISC-V platform:
++// //   test_returns_only.riscv [depth] [trials]
++// //
++// // Output reports cycles/return using rdcycle.
++
++// #include <stdint.h>
++// #include <stdio.h>
++// #include <stdlib.h>
++
++// /* ------------------------------------------------------------ */
++// /* Low-level helpers                                            */
++// /* ------------------------------------------------------------ */
++
++// static inline void fence_all(void) {
++//     __asm__ __volatile__("fence rw, rw; fence.i" ::: "memory");
++// }
++
++// static inline uint64_t rdcycle64(void) {
++// #if defined(__riscv) && (__riscv_xlen == 64)
++//     uint64_t x;
++//     __asm__ __volatile__("rdcycle %0" : "=r"(x));
++//     return x;
++// #else
++//     // RV32 safe pattern
++//     uint32_t hi0, lo, hi1;
++//     __asm__ __volatile__("rdcycleh %0" : "=r"(hi0));
++//     __asm__ __volatile__("rdcycle  %0" : "=r"(lo));
++//     __asm__ __volatile__("rdcycleh %0" : "=r"(hi1));
++//     if (hi0 != hi1) {
++//         __asm__ __volatile__("rdcycle %0" : "=r"(lo));
++//     }
++//     return ((uint64_t)hi1 << 32) | lo;
++// #endif
++// }
++
++// static volatile uint64_t sink = 1;
++
++// /* ------------------------------------------------------------ */
++// /* Recursive function (returns-only timing)                     */
++// /* ------------------------------------------------------------ */
++// /*
++//  * Timing model:
++//  *  - At deepest frame (depth == max_depth):
++//  *      fence; t_start = rdcycle64(); fence
++//  *      return
++//  *  - All returns propagate upward
++//  *  - In main, immediately after recurse returns:
++//  *      fence; t_stop = rdcycle64(); fence
++//  *
++//  * Timed region = ONLY returns + epilogues
++//  */
++// __attribute__((noinline))
++// static uint64_t recurse(int depth,
++//                         int max_depth,
++//                         uint64_t *t_start)
++// {
++//     /* Force real stack frame and epilogue */
++//     volatile uint64_t local[2];
++//     local[0] = (uint64_t)depth * 0x9e3779b97f4a7c15ULL;
++//     local[1] = local[0] ^ (uint64_t)(uintptr_t)&local;
++
++//     if (depth == max_depth) {
++//         fence_all();
++//         *t_start = rdcycle64();
++//         fence_all();
++//         return local[1];
++//     }
++
++//     uint64_t x = recurse(depth + 1, max_depth, t_start);
++
++//     // Prevent tail-call elimination if needed
++//     // x ^= local[1];
++//     // sink ^= x;
++
++//     return x;
++// }
++
++// /* ------------------------------------------------------------ */
++
++// static int cmp_u64(const void *a, const void *b) {
++//     uint64_t ua = *(const uint64_t*)a;
++//     uint64_t ub = *(const uint64_t*)b;
++//     return (ua > ub) - (ua < ub);
++// }
++
++// int main(int argc, char **argv) {
++//     int depth   = (argc > 1) ? atoi(argv[1]) : 40960;
++//     int trials  = (argc > 2) ? atoi(argv[2]) : 11;
++
++//     if (depth < 1) depth = 1;
++//     if (trials < 1) trials = 1;
++
++//     uint64_t *samples = calloc((size_t)trials, sizeof(uint64_t));
++//     if (!samples) {
++//         fprintf(stderr, "alloc failed\n");
++//         return 1;
++//     }
++
++//     /* Warm-up */
++//     for (int i = 0; i < 1000; i++) {
++//         uint64_t ts = 0;
++//         sink ^= recurse(0, depth, &ts);
++//     }
++
++//     for (int t = 0; t < trials; t++) {
++//         uint64_t t_start = 0;
++
++//         recurse(0, depth, &t_start);
++
++//         fence_all();
++//         uint64_t t_stop = rdcycle64();
++//         fence_all();
++
++//         samples[t] = t_stop - t_start;
++//     }
++
++//     qsort(samples, (size_t)trials, sizeof(uint64_t), cmp_u64);
++
++//     uint64_t median_cyc = samples[trials / 2];
++//     double median_per_ret = (double)median_cyc / (double)depth;
++
++//     printf("PAC-RET returns-only microbenchmark (rdcycle)\n");
++//     printf("depth=%d trials=%d\n\n", depth, trials);
++
++//     printf("per-trial results:\n");
++//     for (int t = 0; t < trials; t++) {
++//         double per_ret = (double)samples[t] / (double)depth;
++//         printf("  trial %2d: total=%llu cycles  per-ret=%.3f cycles\n",
++//                t,
++//                (unsigned long long)samples[t],
++//                per_ret);
++//     }
++
++//     printf("\nmedian:\n");
++//     printf("  total:   %llu cycles\n",
++//            (unsigned long long)median_cyc);
++//     printf("  per-ret: %.3f cycles\n",
++//            median_per_ret);
++
++//     free(samples);
++//     return (int)(sink & 1);
++// }
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++
++// // test_entries_only.c
++// // RISC-V microbenchmark: PAC entry (signing) overhead - times only function prologues
++// //
++// // Build two versions:
++// //   - unprotected: PAC pass disabled
++// //   - protected:   PAC pass enabled (signs return address in prologue)
++// //
++// // Run on your RISC-V platform:
++// //   test_entries_only.riscv [depth] [trials]
++// //
++// // Output reports cycles/entry using rdcycle.
++
++// #include <stdint.h>
++// #include <stdio.h>
++// #include <stdlib.h>
++
++// /* ------------------------------------------------------------ */
++// /* Low-level helpers                                            */
++// /* ------------------------------------------------------------ */
++
++// static inline void fence_all(void) {
++//     __asm__ __volatile__("fence rw, rw; fence.i" ::: "memory");
++// }
++
++// static inline uint64_t rdcycle64(void) {
++// #if defined(__riscv) && (__riscv_xlen == 64)
++//     uint64_t x;
++//     __asm__ __volatile__("rdcycle %0" : "=r"(x));
++//     return x;
++// #else
++//     // RV32 safe pattern
++//     uint32_t hi0, lo, hi1;
++//     __asm__ __volatile__("rdcycleh %0" : "=r"(hi0));
++//     __asm__ __volatile__("rdcycle  %0" : "=r"(lo));
++//     __asm__ __volatile__("rdcycleh %0" : "=r"(hi1));
++//     if (hi0 != hi1) {
++//         __asm__ __volatile__("rdcycle %0" : "=r"(lo));
++//     }
++//     return ((uint64_t)hi1 << 32) | lo;
++// #endif
++// }
++
++// static volatile uint64_t sink = 1;
++
++// /* ------------------------------------------------------------ */
++// /* Recursive function (entry-only timing)                       */
++// /* ------------------------------------------------------------ */
++// /*
++//  * Timing model:
++//  *  - In main:
++//  *      fence; t_start = rdcycle64(); fence
++//  *  - Recurse down to max_depth:
++//  *      each entry executes PAC signing (if enabled)
++//  *  - At deepest frame:
++//  *      fence; t_stop = rdcycle64(); fence
++//  *      return
++//  *
++//  * Timed region = ONLY function entries (PAC signing in prologue)
++//  */
++// __attribute__((noinline))
++// static uint64_t recurse_entry(int depth,
++//                               int max_depth,
++//                               uint64_t *t_stop)
++// {
++//     if (depth == max_depth) {
++//         fence_all();
++//         *t_stop = rdcycle64();
++//         fence_all();
++
++//         volatile uint64_t local[2];
++//         local[0] = (uint64_t)depth;
++//         local[1] = local[0] ^ (uint64_t)(uintptr_t)&local;
++//         return local[1];
++//     } else {
++//         uint64_t x = recurse_entry(depth + 1, max_depth, t_stop);
++
++//         /* Force a real stack frame so PAC signing is emitted */
++//         volatile uint64_t local[2];
++//         local[0] = (uint64_t)depth;
++//         local[1] = local[0] ^ (uint64_t)(uintptr_t)&local;
++
++//         (void)x; /* silence unused warning if optimized */
++
++//         return local[1];
++//     }
++// }
++
++// /* ------------------------------------------------------------ */
++
++// static int cmp_u64(const void *a, const void *b) {
++//     uint64_t ua = *(const uint64_t*)a;
++//     uint64_t ub = *(const uint64_t*)b;
++//     return (ua > ub) - (ua < ub);
++// }
++
++// int main(int argc, char **argv) {
++//     int depth   = (argc > 1) ? atoi(argv[1]) : 4096;
++//     int trials  = (argc > 2) ? atoi(argv[2]) : 11;
++
++//     if (depth < 1) depth = 1;
++//     if (trials < 1) trials = 1;
++
++//     uint64_t *samples = calloc((size_t)trials, sizeof(uint64_t));
++//     if (!samples) {
++//         fprintf(stderr, "alloc failed\n");
++//         return 1;
++//     }
++
++//     /* Warm-up */
++//     for (int i = 0; i < 1000; i++) {
++//         uint64_t te = 0;
++//         sink ^= recurse_entry(0, depth, &te);
++//     }
++
++//     for (int t = 0; t < trials; t++) {
++//         uint64_t t_start, t_stop = 0;
++
++//         fence_all();
++//         t_start = rdcycle64();
++//         fence_all();
++
++//         recurse_entry(0, depth, &t_stop);
++
++//         samples[t] = t_stop - t_start;
++//     }
++
++//     qsort(samples, (size_t)trials, sizeof(uint64_t), cmp_u64);
++
++//     uint64_t median_cyc = samples[trials / 2];
++//     double cyc_per_entry = (double)median_cyc / (double)depth;
++
++//     printf("PAC entry-only microbenchmark (rdcycle)\n");
++//     printf("depth=%d trials=%d\n\n", depth, trials);
++
++//     printf("per-trial results:\n");
++//     for (int t = 0; t < trials; t++) {
++//         double per_entry = (double)samples[t] / (double)depth;
++//         printf("  trial %2d: total=%llu cycles  per-entry=%.3f cycles\n",
++//                t,
++//                (unsigned long long)samples[t],
++//                per_entry);
++//     }
++
++//     printf("\nmedian:\n");
++//     printf("  total:     %llu cycles\n",
++//            (unsigned long long)median_cyc);
++//     printf("  per-entry: %.3f cycles\n",
++//            cyc_per_entry);
++
++//     free(samples);
++//     return (int)(sink & 1);
++// }
++
++
 diff --git a/llvm/lib/Target/RISCV/CMakeLists.txt b/llvm/lib/Target/RISCV/CMakeLists.txt
 index ac88cd49db4e..27e22596a3c6 100644
 --- a/llvm/lib/Target/RISCV/CMakeLists.txt
