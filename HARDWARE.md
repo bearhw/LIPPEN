@@ -71,7 +71,8 @@ cd ..
 
 ---
 
-## Step 4: RTL Simulation
+## Step 4: RTL Simulation (optional)
+simulation is slow and can only run small test codes. For running full performance benchmarks follow step 5 (FPGA implementation)
 
 ### 4a. Build the simulator
 
