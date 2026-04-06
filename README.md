@@ -77,14 +77,11 @@ This project is licensed under the GNU General Public License v3.0. See the LICE
 
 ## Citation
 
+```bibtex
 @inproceedings{lippen2026isca,
-
   title     = {LIPPEN: A Lightweight In-Place Pointer Encryption Architecture for Pointer Integrity},
-  
   author    = {Iravani, Erfan and Peri, Lalit Prasad and Ismail, Mohannad and Siddalingaradhya, Charitha Tumkur and Min, Changwoo and Kavun, Elif Bilge and Xiong, Wenjie},
-  
   booktitle = {Proceedings of the 53rd Annual International Symposium on Computer Architecture},
- 
   year      = {2026}
-
 }
+```
