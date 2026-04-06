@@ -6,7 +6,6 @@ Each benchmark is compiled twice — once without PAC and once with PAC — so y
 ## Requirements
 
 - Apple M1 (or ARM64 machine with PAC support)
-- macOS with Xcode command line tools (`xcode-select --install`)
 - `clang` (comes with Xcode)
 - `otool` (comes with Xcode)
 
