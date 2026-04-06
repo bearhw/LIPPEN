@@ -77,8 +77,8 @@ This project is licensed under the GNU General Public License v3.0. See the LICE
 
 ## Citation
 
-@inproceedings{yourkey2026isca,
-  title     = {Your Paper Title},
+@inproceedings{lippen2026isca,
+  title     = {LIPPEN: A Lightweight In-Place Pointer Encryption Architecture for Pointer Integrity},
   author    = {Author One and Author Two and Author Three},
   booktitle = {title},
   year      = {2026}
