@@ -1,4 +1,4 @@
-# [PAPER TITLE] — ISCA 2025 Artifact Evaluation
+# [PAPER TITLE] — ISCA 2026 Artifact Evaluation
 ## Overview
 This repository contains the artifact for the ISCA 2025 paper **[PAPER TITLE]**.
 The artifact supports both **RTL simulation** and **FPGA deployment on VCU118**.
@@ -18,6 +18,7 @@ LIPPEN/
 ## Requirements
 ### Hardware
 - **RTL Simulation:** A Linux workstation with at least 16 GB RAM and 100 GB free disk space
+- **FPGA:** Xilinx VCU118 board
 ### Software
 - Ubuntu 20.04 or 22.04 (recommended)
 - Git ≥ 2.25
@@ -25,6 +26,7 @@ LIPPEN/
 - CMake ≥ 3.20 (`sudo apt install cmake`)
 - Ninja (`sudo apt install ninja-build`)
 - riscv64-linux-gnu cross toolchain (`sudo apt install gcc-riscv64-linux-gnu`)
+- Vivado 2021.2 (for FPGA bitstream generation)
 ### Estimated Setup Time
 | Step | Time |
 |---|---|
@@ -32,6 +34,7 @@ LIPPEN/
 | Chipyard submodule init | ~10–20 minutes |
 | riscv-tools toolchain build | ~2–4 hours |
 | RTL simulation | ~30–60 minutes per test |
+| FPGA bitstream generation | ~4–6 hours |
 | LLVM submodule init | ~10–20 minutes |
 | LLVM build | ~1–2 hours |
 ---
@@ -104,9 +107,33 @@ make CONFIG=MyRoCCSimConfig \
   -j8 run-binary +max-cycles=1000000000
 ```
 ---
-## Step 6: Build LLVM
+## Step 6: FPGA Bitstream Generation (VCU118)
 
-### 6a. Initialize the LLVM submodule
+### 6a. Build the bitstream
+
+```bash
+cd chipyard/fpga
+make SUB_PROJECT=vcu118 CONFIG=MyRoCCVCU118Config CONFIG_PACKAGE=chipyard.fpga.vcu118 bitstream
+```
+
+> **Estimated time:** 4–6 hours depending on your machine.
+
+### 6b. Locate the bitstream
+
+The generated bitstream will be at:
+```
+chipyard/fpga/generated-src/chipyard.fpga.vcu118.VCU118FPGATestHarness.MyRoCCVCU118Config/obj/VCU118FPGATestHarness.bit
+```
+
+### 6c. Program the VCU118
+
+follow https://chipyard.readthedocs.io/en/latest/Prototyping/VCU118.html
+
+
+---
+## Step 7: Build LLVM
+
+### 7a. Initialize the LLVM submodule
 
 ```bash
 cd /path/to/LIPPEN
@@ -115,7 +142,7 @@ git submodule update --init llvm-project
 
 > **Note:** The LLVM repo is ~3 GB. This may take 10–20 minutes depending on your connection.
 
-### 6b. Apply the LLVM patch
+### 7b. Apply the LLVM patch
 
 ```bash
 cd llvm-project
@@ -123,7 +150,7 @@ git checkout llvmorg-18.1.6
 git apply ../patches/llvm.patch
 ```
 
-### 6c. Configure and build
+### 7c. Configure and build
 
 ```bash
 mkdir -p build && cd build
@@ -141,19 +168,13 @@ cd ../..
 
 > **Estimated build time:** 1–2 hours. Requires at least 30 GB free disk space and 16 GB RAM.
 
-### 6d. Compile the test binaries
+### 7d. Compile the test binaries
 
 ```bash
 cd llvm_tests
-make LLVM_CONFIG=/path/to/LIPPEN/llvm-project/build/bin/llvm-config
-```
-
-Replace `/path/to/LIPPEN` with the absolute path to your cloned repository. For example:
-
-```bash
 make LLVM_CONFIG=$(pwd)/../llvm-project/build/bin/llvm-config
 ```
 
-This produces test binaries (e.g. `test.linux.riscv`) in the `llvm_tests/` directory, which can be copied to the FPGA board and run directly on Linux.
+This produces test binaries in the `llvm_tests/` directory, which can be copied to the FPGA board and run directly on Linux.
 
 ---
