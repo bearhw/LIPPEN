@@ -57,12 +57,6 @@ git apply ../../../patches/rocket-chip.patch
 cd ../../..
 ```
 
-Verify:
-```bash
-ls chipyard/generators/chipyard/src/main/scala/rocc/
-ls chipyard/generators/chipyard/src/main/resources/vsrc/
-ls chipyard/tests/
-```
 
 ---
 
@@ -74,8 +68,6 @@ cd chipyard
 source env.sh
 cd ..
 ```
-
-> Add `source /path/to/LIPPEN/chipyard/env.sh` to your `~/.bashrc` for convenience.
 
 ---
 
@@ -112,15 +104,8 @@ make CONFIG=MyRoCCSimConfig \
 
 ## Step 5: FPGA Bitstream Generation (VCU118)
 
-### 5a. Source Vivado 2021.2
 
-```bash
-source /tools/Xilinx/Vivado/2021.2/settings64.sh
-```
-
-> A warning about `XILINX_HLS` not being found is harmless and can be ignored.
-
-### 5b. Build the bitstream
+### 5a. Build the bitstream
 
 ```bash
 cd chipyard/fpga
@@ -129,18 +114,16 @@ make SUB_PROJECT=vcu118 CONFIG=MyRoCCVCU118Config CONFIG_PACKAGE=chipyard.fpga.v
 
 > **Estimated time:** 4–6 hours.
 
-### 5c. Locate the bitstream
+### 5b. Locate the bitstream
 
 ```
 chipyard/fpga/generated-src/chipyard.fpga.vcu118.VCU118FPGATestHarness.MyRoCCVCU118Config/obj/VCU118FPGATestHarness.bit
 ```
 
-### 5d. Program the VCU118
+### 5c. Program the VCU118
 
-1. Open Vivado → Flow Navigator → **Open Hardware Manager**
-2. Click **Open Target** → Auto Connect
-3. Click **Program Device** and select `VCU118FPGATestHarness.bit`
-4. Connect via UART at 115200 baud
+follow https://chipyard.readthedocs.io/en/latest/Prototyping/VCU118.html
+
 
 ---
 
