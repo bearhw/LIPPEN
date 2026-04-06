@@ -81,6 +81,8 @@ make CONFIG=MyRoCCSimConfig
 cd ../../..
 ```
 
+RoCC design can be found under chipyard/generators/chipyard/src/main/scala/rocc/PAPrinceV2.scala
+
 ### 4b. Compile the test binary
 
 ```bash
