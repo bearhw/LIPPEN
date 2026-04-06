@@ -9,9 +9,9 @@ The artifact is organized into three independent components, each with its own R
 
 | Component | Description | README |
 |---|---|---|
-| Chipyard (RISC-V SoC) | RTL simulation and FPGA bitstream on VCU118 | [CHIPYARD.md](CHIPYARD.md) |
-| LLVM (RISC-V backend) | Custom LLVM passes and test binaries | [LLVM.md](LLVM.md) |
-| Apple M1 Micro-benchmarks | PAC instruction benchmarks on ARM64 | [micro-benchmarks-m1/README.md](micro-benchmarks-m1/README.md) |
+| Chipyard (RISC-V SoC) | RTL simulation and FPGA bitstream on VCU118 | [HARDWARE.md](HARDWARE.md) |
+| LLVM (RISC-V backend) | Custom LLVM passes and test binaries | [COMPILER.md](COMPILER.md) |
+| Apple M1 Micro-benchmarks | PAC instruction benchmarks on ARM64 | [micro-benchmarks/m1/README.md](micro-benchmarks/m1/README.md) |
 
 ---
 
@@ -21,16 +21,16 @@ The artifact is organized into three independent components, each with its own R
 LIPPEN/
 ├── chipyard/               # Chipyard v1.8.0 (git submodule)
 ├── llvm-project/           # LLVM llvmorg-18.1.6 (git submodule)
-├── llvm_tests/             # LLVM test binaries for RISC-V
+├── micro-benchmarks/lippen-riscv/             # LLVM test binaries for RISC-V
 ├── pactight/               # PACTight (git submodule)
-├── micro-benchmarks-m1/    # Apple M1 PAC micro-benchmarks
+├── micro-benchmarks/m1/    # Apple M1 PAC micro-benchmarks
 ├── patches/
 │   ├── chipyard.patch      # Chipyard modifications
 │   ├── rocket-chip.patch   # rocket-chip modifications
 │   ├── llvm.patch          # LLVM modifications
 │   └── pactight.patch      # PACTight modifications
-├── CHIPYARD.md
-├── LLVM.md
+├── HARDWARE.md
+├── COMPILER.md
 └── README.md               # This file
 ```
 
