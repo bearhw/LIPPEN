@@ -71,12 +71,7 @@ This produces the following binaries in `llvm_tests/`:
 - `loop_nested.linux.riscv`
 - `foo_bar.linux.riscv`
 
-These are Linux RISC-V ELFs that can be copied to the VCU118 FPGA board and run directly:
-
-```bash
-scp loop.linux.riscv <board-ip>:/tmp/
-ssh <board-ip> "chmod +x /tmp/loop.linux.riscv && /tmp/loop.linux.riscv"
-```
+These are Linux RISC-V ELFs that can be copied to the VCU118 FPGA board and run directly.
 
 ---
 
