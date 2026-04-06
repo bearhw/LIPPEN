@@ -9,7 +9,7 @@ The artifact is organized into three independent components, each with its own R
 
 | Component | Description | README |
 |---|---|---|
-| Chipyard (RISC-V SoC) | RTL simulation and FPGA bitstream on VCU118 | [chipyard.md](chpyard.md) |
+| Chipyard (RISC-V SoC) | RTL simulation and FPGA bitstream on VCU118 | [CHIPYARD.md](CHIPYARD.md) |
 | LLVM (RISC-V backend) | Custom LLVM passes and test binaries | [LLVM.md](LLVM.md) |
 | Apple M1 Micro-benchmarks | PAC instruction benchmarks on ARM64 | [micro-benchmarks-m1/README.md](micro-benchmarks-m1/README.md) |
 
