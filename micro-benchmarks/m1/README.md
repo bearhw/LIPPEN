@@ -16,8 +16,8 @@ Each benchmark is compiled twice — once without PAC and once with PAC — so y
 ### loop.c
 
 ```bash
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector loop.c -o loop_nopac
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector -mbranch-protection=pac-ret+leaf loop.c -o loop_pac
+clang -o0 -arch arm64 loop.c -o loop_nopac
+clang -o0 -arch arm64e loop.c -o loop_pac
 ```
 
 Verify assembly:
@@ -31,8 +31,9 @@ otool -tvV ./loop_pac
 ### loop_nested.c
 
 ```bash
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector loop_nested.c -o loop_nested_nopac
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector -mbranch-protection=pac-ret+leaf loop_nested.c -o loop_nested_pac
+clang -o0 -arch arm64 loop_nested.c -o loop_nested_nopac
+clang -o0 -arch arm64e loop_nested.c -o loop_nested_pac
+
 ```
 
 Verify assembly:
@@ -46,8 +47,8 @@ otool -tvV ./loop_nested_pac
 ### deep_recursive_return.c
 
 ```bash
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector deep_recursive_return.c -o deep_recursive_return_nopac
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector -mbranch-protection=pac-ret+leaf deep_recursive_return.c -o deep_recursive_return_pac
+clang -o0 -arch arm64 deep_recursive_return.c -o deep_recursive_return_nopac
+clang -o0 -arch arm64e deep_recursive_return.c -o deep_recursive_return_pac
 ```
 
 ---
@@ -55,8 +56,8 @@ clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector -mbranch-protection=pac
 ### deep_recursive_entry.c
 
 ```bash
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector deep_recursive_entry.c -o deep_recursive_entry_nopac
-clang -O3 -Wall -Wextra -arch arm64 -fno-stack-protector -mbranch-protection=pac-ret+leaf deep_recursive_entry.c -o deep_recursive_entry_pac
+clang -o0 -arch arm64 deep_recursive_entry.c -o deep_recursive_entry_nopac
+clang -o0 -arch arm64e deep_recursive_entry.c -o deep_recursive_entry_pac 
 ```
 
 ---
