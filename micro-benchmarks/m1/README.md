@@ -68,11 +68,11 @@ These are compiled without optimization to preserve the data-access structure fo
 
 ```bash
 clang -O0 -fno-unroll-loops -fno-vectorize -fno-slp-vectorize \
-    -fno-inline -fno-builtin -arch arm64 \
+    -fno-inline -fno-builtin -arch arm64e \
     data_loop.c -o data_loop
 
 clang -O0 -fno-unroll-loops -fno-vectorize -fno-slp-vectorize \
-    -fno-inline -fno-builtin -arch arm64 \
+    -fno-inline -fno-builtin -arch arm64e \
     data_unrolled32.c -o data_unrolled32
 ```
 
