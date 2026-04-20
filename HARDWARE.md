@@ -146,8 +146,9 @@ cd /tmp/sd
 
 ## Plotting results
 
-use the provided python script the reproduce the Figure 4 of the paper.
-The values should be manually inserted into the python code
+use the provided python script plot.py the reproduce the Figure 4 of the paper.
+
+The values should be manually inserted into the python code. 
 
 
 ---
