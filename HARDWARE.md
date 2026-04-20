@@ -127,6 +127,28 @@ chipyard/fpga/generated-src/chipyard.fpga.vcu118.VCU118FPGATestHarness.MyRoCCVCU
 
 follow https://chipyard.readthedocs.io/en/latest/Prototyping/VCU118.html
 
+open a termianl session and connect to FPGA and then program the FPGA using vivado
+```bash
+sudo screen -S FPGA_UART_CONSOLE /dev/ttyUSB3 115200
+```
+look at the FPGA terminal and upon the finishing of booting process login with these credentials
+usename: root
+password: fpga
+
+once logged in, make a new directory, mount the sd-card, and run binaries
+```bash
+mkdir /tmp/sd
+mount -t ext4 /dev/mmcblk0p2 /tmp/sd
+cd /tmp/sd
+./your_program
+```
+---
+
+## Plotting results
+
+use the provided python script the reproduce the Figure 4 of the paper.
+The values should be manually inserted into the python code
+
 
 ---
 
