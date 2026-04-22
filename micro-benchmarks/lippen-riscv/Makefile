@@ -58,7 +58,7 @@ LDFLAGS += -static
 # =============================
 # Apps / sources
 # =============================
-PROGRAMS ?= deep_recursive_entry deep_recursive_return loop foo_bar loop_nested
+PROGRAMS ?= deep_recursive_entry deep_recursive_return loop_s loop_l foo_bar loop_nested
 APPS := $(PROGRAMS)
 
 .SECONDARY:
