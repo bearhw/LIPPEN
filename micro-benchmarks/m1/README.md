@@ -13,17 +13,21 @@ Each benchmark is compiled twice — once without PAC and once with PAC — so y
 
 ## Benchmarks
 
-### loop.c
+### loop_s.c and loop_l.c
 
 ```bash
-clang -o0 -arch arm64 loop.c -o loop_nopac
-clang -o0 -arch arm64e loop.c -o loop_pac
+clang -o0 -arch arm64 loop_s.c -o loop_s_nopac
+clang -o0 -arch arm64e loop_s.c -o loop_s_pac
+clang -o0 -arch arm64 loop_l.c -o loop_l_nopac
+clang -o0 -arch arm64e loop_l.c -o loop_l_pac
 ```
 
 Verify assembly:
 ```bash
-otool -tvV ./loop_nopac
-otool -tvV ./loop_pac
+otool -tvV ./loop_s_nopac
+otool -tvV ./loop_s_pac
+otool -tvV ./loop_l_nopac
+otool -tvV ./loop_l_pac
 ```
 
 ---
