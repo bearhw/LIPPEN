@@ -39,9 +39,11 @@ The microbenchmarks need to be compiled once and the resulting RISC-V binaries c
 ### Return Address Protection Microbenchmarks
 
 **Instrumented binaries:**
-1. Run `make` to build the instrumented binaries.
+1. Run `make` to build the instrumented binaries containing LIPPEN instructions, as described in the [Standard Benchmarks README](https://github.com/bearhw/LIPPEN/tree/main/micro-benchmarks/lippen-riscv#standard-benchmarks).
 
 **Uninstrumented baseline binaries:**
+
+To generate uninstrumented baseline binaries, the source files must be compiled using an unmodified LLVM toolchain. Follow the steps below:
 1. Clone LLVM and check out the required version:
 ```bash
    git clone https://github.com/llvm/llvm-project.git
