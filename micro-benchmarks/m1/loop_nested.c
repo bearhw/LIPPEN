@@ -55,7 +55,7 @@ int main(int argc, char **argv) {
    timebase_denom = tb.denom;
    uint64_t iters  = (argc > 1) ? strtoull(argv[1], 0, 0) : 20000000ULL;
    int trials      = (argc > 2) ? atoi(argv[2]) : 7;
-   int depth       = (argc > 3) ? atoi(argv[3]) : 38;
+   int depth       = (argc > 3) ? atoi(argv[3]) : 8;
    if (trials < 1) trials = 1;
    if (depth < 0) depth = 0;
    uint64_t *samples = calloc((size_t)trials, sizeof(uint64_t));
