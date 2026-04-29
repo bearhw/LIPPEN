@@ -77,4 +77,4 @@ Since LIPPEN instructions are manually inserted, follow the compilation commands
 
 ## Stage 3: Plotting
 
-Open `plot.py` and follow the inline comments to insert the collected timing data into the appropriate placeholders. Running the script will generate Figure 4.
+Open `eval_data.json` and insert your collected timing data into the corresponding fields for each architecture. Once the JSON file is populated, simply run `plot.py`. The script will automatically read your data, calculate the overheads, and generate Figure 4.
