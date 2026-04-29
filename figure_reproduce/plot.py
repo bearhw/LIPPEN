@@ -1,18 +1,19 @@
+import json
 import numpy as np
 import matplotlib.pyplot as plt
 from matplotlib.patches import Patch
 
 # =========================================================
-#                     STYLE CONTROLS
+#                    STYLE CONTROLS
 # =========================================================
-FIG_WIDTH, FIG_HEIGHT = 20, 5.0 # Increased height slightly for better label spacing
+FIG_WIDTH, FIG_HEIGHT = 20, 5.0
 DPI = 300
 YMAX_LEFT  = 450.0
 YMAX_RIGHT = 140.0
 
 LABEL_FONTSIZE = 17
 XTICK_FONTSIZE = 13
-YTICK_FONTSIZE = 18 # <--- INCREASED THIS for larger Y-axis numbers
+YTICK_FONTSIZE = 18
 LEGEND_FONTSIZE = 17
 TITLE_FONTSIZE = 18
 
@@ -27,422 +28,105 @@ C_PRINCE_B = "#0d47a1" # Dark Blue
 C_QARMA_B  = "#ef6c00" # Orange
 C_APPLE    = "#000000" # Black
 
-
 # =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
+# LOAD DATA FROM JSON FILE & CALCULATE OVERHEADS
 # =========================================================
 
-# =========================================================
-# APPLE RAW DATA
-# =========================================================
-# get it from loop_l.c
-#loop_l_nopac
-APPLE_LOOP_L_NOPAC = 
-#loop_l_pac
-apple_loop_l_pac = 
-apple_loop_l_pac_overhead = ((apple_loop_l_pac - APPLE_LOOP_L_NOPAC) / APPLE_LOOP_L_NOPAC) * 100
+# Helper function to calculate overhead
+def get_ovh(val, base):
+    if base == 0: return 0.0 # Prevent division by zero if evaluators leave it empty
+    return ((val - base) / base) * 100.0
 
-# get it from loop_s.c
-#loop_s_nopac
-APPLE_LOOP_S_NOPAC = 
-#loop_s_pac
-apple_loop_s_pac = 
-apple_loop_s_pac_overhead = ((apple_loop_s_pac - APPLE_LOOP_S_NOPAC) / APPLE_LOOP_S_NOPAC) * 100
+# Load the JSON file
+try:
+    with open('eval_data.json', 'r') as f:
+        data = json.load(f)
+except FileNotFoundError:
+    print("Error: 'eval_data.json' not found. Please ensure it is in the same directory.")
+    exit(1)
 
-# get it from loop_nested.c
-# loop_nested_nopac
-APPLE_LOOP_NESTED_NOPAC = 
-# loop_nested_pac
-apple_loop_nested_pac =
-apple_loop_nested_pac_overhead = ((apple_loop_nested_pac - APPLE_LOOP_NESTED_NOPAC) / APPLE_LOOP_NESTED_NOPAC) * 100
+# 1. APPLE OVERHEADS
+app = data["APPLE"]
+apple_loop_l_pac_overhead = get_ovh(app["loop_l_pac"], app["LOOP_L_NOPAC"])
+apple_loop_s_pac_overhead = get_ovh(app["loop_s_pac"], app["LOOP_S_NOPAC"])
+apple_loop_nested_pac_overhead = get_ovh(app["loop_nested_pac"], app["LOOP_NESTED_NOPAC"])
+apple_deep_recursive_return_pac_overhead = get_ovh(app["deep_recursive_return_pac"], app["DEEP_RECURSIVE_RETURN_NOPAC"])
+apple_deep_recursive_entry_pac_overhead = get_ovh(app["deep_recursive_entry_pac"], app["DEEP_RECURSIVE_ENTRY_NOPAC"])
+apple_data_loop_pac_fused_overhead = get_ovh(app["data_loop_pac_fused"], app["DATA_LOOP_NOPAC"])
+apple_data_loop_pac_split_overhead = get_ovh(app["data_loop_pac_split"], app["DATA_LOOP_NOPAC"])
+apple_data_loop_pac_split_ia_overhead = get_ovh(app["data_loop_pac_split_ia"], app["DATA_LOOP_NOPAC"])
+apple_data_unrolled32_pac_fused_overhead = get_ovh(app["data_unrolled32_pac_fused"], app["DATA_UNROLLED32_NOPAC"])
+apple_data_unrolled32_pac_split_overhead = get_ovh(app["data_unrolled32_pac_split"], app["DATA_UNROLLED32_NOPAC"])
+apple_data_unrolled32_pac_split_const_overhead = get_ovh(app["data_unrolled32_pac_split_const"], app["DATA_UNROLLED32_NOPAC"])
+apple_data_unrolled32_pac_split_reload_overhead = get_ovh(app["data_unrolled32_pac_split_reload"], app["DATA_UNROLLED32_NOPAC"])
 
-# get it from deep_recursive_return.c
-# deep_recursive_return_nopac
-APPLE_DEEP_RECURSIVE_RETURN_NOPAC =
-# deep_recursive_return_pac
-apple_deep_recursive_return_pac = 
-apple_deep_recursive_return_pac_overhead = ((apple_deep_recursive_return_pac - APPLE_DEEP_RECURSIVE_RETURN_NOPAC) / APPLE_DEEP_RECURSIVE_RETURN_NOPAC) * 100
+# 2. ROCKET PAC OVERHEADS
+rp = data["ROCKET_PAC"]
+rocket_loop_l_pac_overhead = get_ovh(rp["loop_l_pac"], rp["LOOP_L_NOPAC"])
+rocket_loop_s_pac_overhead = get_ovh(rp["loop_s_pac"], rp["LOOP_S_NOPAC"])
+rocket_loop_nested_pac_overhead = get_ovh(rp["loop_nested_pac"], rp["LOOP_NESTED_NOPAC"])
+rocket_deep_recursive_return_pac_overhead = get_ovh(rp["deep_recursive_return_pac"], rp["DEEP_RECURSIVE_RETURN_NOPAC"])
+rocket_deep_recursive_entry_pac_overhead = get_ovh(rp["deep_recursive_entry_pac"], rp["DEEP_RECURSIVE_ENTRY_NOPAC"])
+rocket_data_loop_pac_split_overhead = get_ovh(rp["data_loop_pac_split"], rp["DATA_LOOP_NOPAC"])
+rocket_data_loop_pac_split_ia_overhead = get_ovh(rp["data_loop_pac_split_ia"], rp["DATA_LOOP_NOPAC"])
+rocket_data_unrolled32_pac_split_overhead = get_ovh(rp["data_unrolled32_pac_split"], rp["DATA_UNROLLED32_NOPAC"])
+rocket_data_unrolled32_pac_split_const_overhead = get_ovh(rp["data_unrolled32_pac_split_const"], rp["DATA_UNROLLED32_NOPAC"])
+rocket_data_unrolled32_pac_split_reload_overhead = get_ovh(rp["data_unrolled32_pac_split_reload"], rp["DATA_UNROLLED32_NOPAC"])
 
-# get it from deep_recursive_entry.c
-# deep_recursive_entry_nopac
-APPLE_DEEP_RECURSIVE_ENTRY_NOPAC =
-# deep_recursive_entry_pac
-apple_deep_recursive_entry_pac =
-apple_deep_recursive_entry_pac_overhead = ((apple_deep_recursive_entry_pac - APPLE_DEEP_RECURSIVE_ENTRY_NOPAC) / APPLE_DEEP_RECURSIVE_ENTRY_NOPAC) * 100
+# 3. ROCKET LIPPEN OVERHEADS
+rl = data["ROCKET_LIPPEN"]
+rocket_loop_l_lippen_overhead = get_ovh(rl["loop_l_lippen"], rl["LOOP_L_NOLIPPEN"])
+rocket_loop_s_lippen_overhead = get_ovh(rl["loop_s_lippen"], rl["LOOP_S_NOLIPPEN"])
+rocket_loop_nested_lippen_overhead = get_ovh(rl["loop_nested_lippen"], rl["LOOP_NESTED_NOLIPPEN"])
+rocket_deep_recursive_return_lippen_overhead = get_ovh(rl["deep_recursive_return_lippen"], rl["DEEP_RECURSIVE_RETURN_NOLIPPEN"])
+rocket_deep_recursive_entry_lippen_overhead = get_ovh(rl["deep_recursive_entry_lippen"], rl["DEEP_RECURSIVE_ENTRY_NOLIPPEN"])
+rocket_data_loop_lippen_split_overhead = get_ovh(rl["data_loop_lippen_split"], rl["DATA_LOOP_NOLIPPEN"])
+rocket_data_loop_lippen_split_ia_overhead = get_ovh(rl["data_loop_lippen_split_ia"], rl["DATA_LOOP_NOLIPPEN"])
+rocket_data_unrolled32_lippen_split_overhead = get_ovh(rl["data_unrolled32_lippen_split"], rl["DATA_UNROLLED32_NOLIPPEN"])
+rocket_data_unrolled32_lippen_split_const_overhead = get_ovh(rl["data_unrolled32_lippen_split_const"], rl["DATA_UNROLLED32_NOLIPPEN"])
+rocket_data_unrolled32_lippen_split_reload_overhead = get_ovh(rl["data_unrolled32_lippen_split_reload"], rl["DATA_UNROLLED32_NOLIPPEN"])
 
-# get it from data_loop.c
-# put the number you see in front of LDR=
-APPLE_DATA_LOOP_NOPAC = 
-# put the number you see in front of LDRAA=
-apple_data_loop_pac_fused = 
-# put the number you see in front of LDR+AUTDA=
-apple_data_loop_pac_split = 
-# put the number you see in front of LDR+AUTIA(c)=
-apple_data_loop_pac_split_ia = 
-apple_data_loop_pac_fused_overhead = ((apple_data_loop_pac_fused - APPLE_DATA_LOOP_NOPAC) / APPLE_DATA_LOOP_NOPAC) * 100
-apple_data_loop_pac_split_overhead = ((apple_data_loop_pac_split - APPLE_DATA_LOOP_NOPAC) / APPLE_DATA_LOOP_NOPAC) * 100
-apple_data_loop_pac_split_ia_overhead = ((apple_data_loop_pac_split_ia - APPLE_DATA_LOOP_NOPAC) / APPLE_DATA_LOOP_NOPAC) * 100
+# 4. BOOM PAC OVERHEADS
+bp = data["BOOM_PAC"]
+boom_loop_l_pac_overhead = get_ovh(bp["loop_l_pac"], bp["LOOP_L_NOPAC"])
+boom_loop_s_pac_overhead = get_ovh(bp["loop_s_pac"], bp["LOOP_S_NOPAC"])
+boom_loop_nested_pac_overhead = get_ovh(bp["loop_nested_pac"], bp["LOOP_NESTED_NOPAC"])
+boom_deep_recursive_return_pac_overhead = get_ovh(bp["deep_recursive_return_pac"], bp["DEEP_RECURSIVE_RETURN_NOPAC"])
+boom_deep_recursive_entry_pac_overhead = get_ovh(bp["deep_recursive_entry_pac"], bp["DEEP_RECURSIVE_ENTRY_NOPAC"])
+boom_data_loop_pac_split_overhead = get_ovh(bp["data_loop_pac_split"], bp["DATA_LOOP_NOPAC"])
+boom_data_loop_pac_split_ia_overhead = get_ovh(bp["data_loop_pac_split_ia"], bp["DATA_LOOP_NOPAC"])
+boom_data_unrolled32_pac_split_overhead = get_ovh(bp["data_unrolled32_pac_split"], bp["DATA_UNROLLED32_NOPAC"])
+boom_data_unrolled32_pac_split_const_overhead = get_ovh(bp["data_unrolled32_pac_split_const"], bp["DATA_UNROLLED32_NOPAC"])
+boom_data_unrolled32_pac_split_reload_overhead = get_ovh(bp["data_unrolled32_pac_split_reload"], bp["DATA_UNROLLED32_NOPAC"])
 
+# 5. BOOM LIPPEN OVERHEADS
+bl = data["BOOM_LIPPEN"]
+boom_loop_l_lippen_overhead = get_ovh(bl["loop_l_lippen"], bl["LOOP_L_NOLIPPEN"])
+boom_loop_s_lippen_overhead = get_ovh(bl["loop_s_lippen"], bl["LOOP_S_NOLIPPEN"])
+boom_loop_nested_lippen_overhead = get_ovh(bl["loop_nested_lippen"], bl["LOOP_NESTED_NOLIPPEN"])
+boom_deep_recursive_return_lippen_overhead = get_ovh(bl["deep_recursive_return_lippen"], bl["DEEP_RECURSIVE_RETURN_NOLIPPEN"])
+boom_deep_recursive_entry_lippen_overhead = get_ovh(bl["deep_recursive_entry_lippen"], bl["DEEP_RECURSIVE_ENTRY_NOLIPPEN"])
+boom_data_loop_lippen_split_overhead = get_ovh(bl["data_loop_lippen_split"], bl["DATA_LOOP_NOLIPPEN"])
+boom_data_loop_lippen_split_ia_overhead = get_ovh(bl["data_loop_lippen_split_ia"], bl["DATA_LOOP_NOLIPPEN"])
+boom_data_unrolled32_lippen_split_overhead = get_ovh(bl["data_unrolled32_lippen_split"], bl["DATA_UNROLLED32_NOLIPPEN"])
+boom_data_unrolled32_lippen_split_const_overhead = get_ovh(bl["data_unrolled32_lippen_split_const"], bl["DATA_UNROLLED32_NOLIPPEN"])
+boom_data_unrolled32_lippen_split_reload_overhead = get_ovh(bl["data_unrolled32_lippen_split_reload"], bl["DATA_UNROLLED32_NOLIPPEN"])
 
-# get it from data_unrolled32.c
-# put the number you see in front of LDR=
-APPLE_DATA_UNRROLLED32_NOPAC =
-# put the number you see in front of LDRAA=
-apple_data_unrolled32_pac_fused = 
-# put the number you see in front of LDR+AUTDA=
-apple_data_unrolled32_pac_split = 
-# put the number you see in front of LDR+AUTIA(c)=
-apple_data_unrolled32_pac_split_const = 
-# put the number you see in front of LDR+AUTIA(reload)=
-apple_data_unrolled32_pac_split_reload = 
-apple_data_unrolled32_pac_fused_overhead = ((apple_data_unrolled32_pac_fused - APPLE_DATA_UNRROLLED32_NOPAC) / APPLE_DATA_UNRROLLED32_NOPAC) * 100
-apple_data_unrolled32_pac_split_overhead = ((apple_data_unrolled32_pac_split - APPLE_DATA_UNRROLLED32_NOPAC) / APPLE_DATA_UNRROLLED32_NOPAC) * 100
-apple_data_unrolled32_pac_split_const_overhead = ((apple_data_unrolled32_pac_split_const - APPLE_DATA_UNRROLLED32_NOPAC) / APPLE_DATA_UNRROLLED32_NOPAC) * 100
-apple_data_unrolled32_pac_split_reload_overhead = ((apple_data_unrolled32_pac_split_reload - APPLE_DATA_UNRROLLED32_NOPAC) / APPLE_DATA_UNRROLLED32_NOPAC) * 100
+# 6. BOOM CONFIG1 (NO RAS) OVERHEADS
+bc1 = data["BOOM_CONFIG1_NO_RAS"]
+boom_custom_loop_l_lippen_overhead = get_ovh(bc1["loop_l_lippen"], bc1["LOOP_L_NOLIPPEN"])
+boom_custom_loop_s_lippen_overhead = get_ovh(bc1["loop_s_lippen"], bc1["LOOP_S_NOLIPPEN"])
+boom_custom_loop_nested_lippen_overhead = get_ovh(bc1["loop_nested_lippen"], bc1["LOOP_NESTED_NOLIPPEN"])
+boom_custom_deep_recursive_return_lippen_overhead = get_ovh(bc1["deep_recursive_return_lippen"], bc1["DEEP_RECURSIVE_RETURN_NOLIPPEN"])
+boom_custom_deep_recursive_entry_lippen_overhead = get_ovh(bc1["deep_recursive_entry_lippen"], bc1["DEEP_RECURSIVE_ENTRY_NOLIPPEN"])
 
-# =========================================================
-# ROCKET PAC/QARMA RAW DATA
-# =========================================================
-# get it from loop_l.c
-#loop_l_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_LOOP_L_NOPAC = 
-#loop_l.linux.riscv
-rocket_loop_l_pac = 
-rocket_loop_l_pac_overhead = ((rocket_loop_l_pac - ROCKET_LOOP_L_NOPAC) / ROCKET_LOOP_L_NOPAC) * 100
-
-# get it from loop_s.c
-#loop_s_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_LOOP_S_NOPAC = 
-#loop_s.linux.riscv
-rocket_loop_s_pac = 
-rocket_loop_s_pac_overhead = ((rocket_loop_s_pac - ROCKET_LOOP_S_NOPAC) / ROCKET_LOOP_S_NOPAC) * 100
-
-# get it from loop_nested.c
-#loop_nested_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_LOOP_NESTED_NOPAC = 
-#loop_nested.linux.riscv
-rocket_loop_nested_pac =
-rocket_loop_nested_pac_overhead = ((rocket_loop_nested_pac - ROCKET_LOOP_NESTED_NOPAC) / ROCKET_LOOP_NESTED_NOPAC) * 100
-
-# get it from deep_recursive_return.c
-#deep_recursive_return_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_DEEP_RECURSIVE_RETURN_NOPAC =
-#deep_recursive_return.linux.riscv --> you should name it like that while you are generating it
-rocket_deep_recursive_return_pac = 
-rocket_deep_recursive_return_pac_overhead = ((rocket_deep_recursive_return_pac - ROCKET_DEEP_RECURSIVE_RETURN_NOPAC) / ROCKET_DEEP_RECURSIVE_RETURN_NOPAC) * 100
-
-# get it from deep_recursive_entry.c
-#deep_recursive_entry_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_DEEP_RECURSIVE_ENTRY_NOPAC =
-#deep_recursive_entry.linux.riscv --> you should name it like that while you are generating it
-rocket_deep_recursive_entry_pac =
-rocket_deep_recursive_entry_pac_overhead = ((rocket_deep_recursive_entry_pac - ROCKET_DEEP_RECURSIVE_ENTRY_NOPAC) / ROCKET_DEEP_RECURSIVE_ENTRY_NOPAC) * 100
-
-# get it from data_loop.c
-# put the number you see in front of nopac=
-ROCKET_DATA_LOOP_NOPAC = 
-# put the number you see in front of pac=
-rocket_data_loop_pac_split = 
-# put the number you see in front of pac_ia=
-rocket_data_loop_pac_split_ia = 
-rocket_data_loop_pac_split_overhead = ((rocket_data_loop_pac_split - ROCKET_DATA_LOOP_NOPAC) / ROCKET_DATA_LOOP_NOPAC) * 100
-rocket_data_loop_pac_split_ia_overhead = ((rocket_data_loop_pac_split_ia - ROCKET_DATA_LOOP_NOPAC) / ROCKET_DATA_LOOP_NOPAC) * 100
-
-# get it from data_unrolled32.c
-# put the number you see in front of nopac=
-ROCKET_DATA_UNRROLLED32_NOPAC =
-# put the number you see in front of pac=
-rocket_data_unrolled32_pac_split = 
-# put the number you see in front of pac_ia=
-rocket_data_unrolled32_pac_split_const = 
-# put the number you see in front of pac_ia_reload=
-rocket_data_unrolled32_pac_split_reload = 
-rocket_data_unrolled32_pac_split_overhead = ((rocket_data_unrolled32_pac_split - ROCKET_DATA_UNRROLLED32_NOPAC) / ROCKET_DATA_UNRROLLED32_NOPAC) * 100
-rocket_data_unrolled32_pac_split_const_overhead = ((rocket_data_unrolled32_pac_split_const - ROCKET_DATA_UNRROLLED32_NOPAC) / ROCKET_DATA_UNRROLLED32_NOPAC) * 100
-rocket_data_unrolled32_pac_split_reload_overhead = ((rocket_data_unrolled32_pac_split_reload - ROCKET_DATA_UNRROLLED32_NOPAC) / ROCKET_DATA_UNRROLLED32_NOPAC) * 100
-
-# =========================================================
-# ROCKET LIPPEN/PRINCE RAW DATA
-# =========================================================
-# get it from loop_l.c
-#loop_l_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_LOOP_L_NOLIPPEN = 
-#loop_l.linux.riscv
-rocket_loop_l_lippen = 
-rocket_loop_l_lippen_overhead = ((rocket_loop_l_lippen - ROCKET_LOOP_L_NOLIPPEN) / ROCKET_LOOP_L_NOLIPPEN) * 100
-
-# get it from loop_s.c
-#loop_s_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_LOOP_S_NOLIPPEN = 
-#loop_s.linux.riscv
-rocket_loop_s_lippen = 
-rocket_loop_s_lippen_overhead = ((rocket_loop_s_lippen - ROCKET_LOOP_S_NOLIPPEN) / ROCKET_LOOP_S_NOLIPPEN) * 100
-
-# get it from loop_nested.c
-#loop_nested_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_LOOP_NESTED_NOLIPPEN = 
-#loop_nested.linux.riscv
-rocket_loop_nested_lippen =
-rocket_loop_nested_lippen_overhead = ((rocket_loop_nested_lippen - ROCKET_LOOP_NESTED_NOLIPPEN) / ROCKET_LOOP_NESTED_NOLIPPEN) * 100
-
-# get it from deep_recursive_return.c
-#deep_recursive_return_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_DEEP_RECURSIVE_RETURN_NOLIPPEN =
-#deep_recursive_return.linux.riscv --> you should name it like that while you are generating it
-rocket_deep_recursive_return_lippen = 
-rocket_deep_recursive_return_lippen_overhead = ((rocket_deep_recursive_return_lippen - ROCKET_DEEP_RECURSIVE_RETURN_NOLIPPEN) / ROCKET_DEEP_RECURSIVE_RETURN_NOLIPPEN) * 100
-
-# get it from deep_recursive_entry.c
-#deep_recursive_entry_nopac.linux.riscv --> you should name it like that while you are generating it
-ROCKET_DEEP_RECURSIVE_ENTRY_NOLIPPEN =
-#deep_recursive_entry.linux.riscv --> you should name it like that while you are generating it
-rocket_deep_recursive_entry_lippen =
-rocket_deep_recursive_entry_lippen_overhead = ((rocket_deep_recursive_entry_lippen - ROCKET_DEEP_RECURSIVE_ENTRY_NOLIPPEN) / ROCKET_DEEP_RECURSIVE_ENTRY_NOLIPPEN) * 100
-
-# get it from data_loop.c
-# put the number you see in front of nopac=
-ROCKET_DATA_LOOP_NOLIPPEN = 
-# put the number you see in front of pac=
-rocket_data_loop_lippen_split = 
-# put the number you see in front of pac_ia=
-rocket_data_loop_lippen_split_ia = 
-rocket_data_loop_lippen_split_overhead = ((rocket_data_loop_lippen_split - ROCKET_DATA_LOOP_NOLIPPEN) / ROCKET_DATA_LOOP_NOLIPPEN) * 100
-rocket_data_loop_lippen_split_ia_overhead = ((rocket_data_loop_lippen_split_ia - ROCKET_DATA_LOOP_NOLIPPEN) / ROCKET_DATA_LOOP_NOLIPPEN) * 100
-
-# get it from data_unrolled32.c
-# put the number you see in front of nopac=
-ROCKET_DATA_UNRROLLED32_NOLIPPEN =
-# put the number you see in front of pac=
-rocket_data_unrolled32_lippen_split = 
-# put the number you see in front of pac_ia=
-rocket_data_unrolled32_lippen_split_const = 
-# put the number you see in front of pac_ia_reload=
-rocket_data_unrolled32_lippen_split_reload = 
-rocket_data_unrolled32_lippen_split_overhead = ((rocket_data_unrolled32_lippen_split - ROCKET_DATA_UNRROLLED32_NOLIPPEN) / ROCKET_DATA_UNRROLLED32_NOLIPPEN) * 100
-rocket_data_unrolled32_lippen_split_const_overhead = ((rocket_data_unrolled32_lippen_split_const - ROCKET_DATA_UNRROLLED32_NOLIPPEN) / ROCKET_DATA_UNRROLLED32_NOLIPPEN) * 100
-rocket_data_unrolled32_lippen_split_reload_overhead = ((rocket_data_unrolled32_lippen_split_reload - ROCKET_DATA_UNRROLLED32_NOLIPPEN) / ROCKET_DATA_UNRROLLED32_NOLIPPEN) * 100
-
-
-# =========================================================
-# BOOM PAC/QARMA RAW DATA
-# =========================================================
-# get it from loop_l.c
-#loop_l_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_LOOP_L_NOPAC = 
-#loop_l.linux.riscv
-boom_loop_l_pac = 
-boom_loop_l_pac_overhead = ((boom_loop_l_pac - BOOM_LOOP_L_NOPAC) / BOOM_LOOP_L_NOPAC) * 100
-
-# get it from loop_s.c
-#loop_s_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_LOOP_S_NOPAC = 
-#loop_s.linux.riscv
-boom_loop_s_pac = 
-boom_loop_s_pac_overhead = ((boom_loop_s_pac - BOOM_LOOP_S_NOPAC) / BOOM_LOOP_S_NOPAC) * 100
-
-# get it from loop_nested.c
-#loop_nested_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_LOOP_NESTED_NOPAC = 
-#loop_nested.linux.riscv
-boom_loop_nested_pac =
-boom_loop_nested_pac_overhead = ((boom_loop_nested_pac - BOOM_LOOP_NESTED_NOPAC) / BOOM_LOOP_NESTED_NOPAC) * 100
-
-# get it from deep_recursive_return.c
-#deep_recursive_return_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_DEEP_RECURSIVE_RETURN_NOPAC =
-#deep_recursive_return.linux.riscv --> you should name it like that while you are generating it
-boom_deep_recursive_return_pac = 
-boom_deep_recursive_return_pac_overhead = ((boom_deep_recursive_return_pac - BOOM_DEEP_RECURSIVE_RETURN_NOPAC) / BOOM_DEEP_RECURSIVE_RETURN_NOPAC) * 100
-
-# get it from deep_recursive_entry.c
-#deep_recursive_entry_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_DEEP_RECURSIVE_ENTRY_NOPAC =
-#deep_recursive_entry.linux.riscv --> you should name it like that while you are generating it
-boom_deep_recursive_entry_pac =
-boom_deep_recursive_entry_pac_overhead = ((boom_deep_recursive_entry_pac - BOOM_DEEP_RECURSIVE_ENTRY_NOPAC) / BOOM_DEEP_RECURSIVE_ENTRY_NOPAC) * 100
-
-# get it from data_loop.c
-# put the number you see in front of nopac=
-BOOM_DATA_LOOP_NOPAC = 
-# put the number you see in front of pac=
-boom_data_loop_pac_split = 
-# put the number you see in front of pac_ia=
-boom_data_loop_pac_split_ia = 
-boom_data_loop_pac_split_overhead = ((boom_data_loop_pac_split - BOOM_DATA_LOOP_NOPAC) / BOOM_DATA_LOOP_NOPAC) * 100
-boom_data_loop_pac_split_ia_overhead = ((boom_data_loop_pac_split_ia - BOOM_DATA_LOOP_NOPAC) / BOOM_DATA_LOOP_NOPAC) * 100
-
-# get it from data_unrolled32.c
-# put the number you see in front of nopac=
-BOOM_DATA_UNRROLLED32_NOPAC =
-# put the number you see in front of pac=
-boom_data_unrolled32_pac_split = 
-# put the number you see in front of pac_ia=
-boom_data_unrolled32_pac_split_const = 
-# put the number you see in front of pac_ia_reload=
-boom_data_unrolled32_pac_split_reload = 
-boom_data_unrolled32_pac_split_overhead = ((boom_data_unrolled32_pac_split - BOOM_DATA_UNRROLLED32_NOPAC) / BOOM_DATA_UNRROLLED32_NOPAC) * 100
-boom_data_unrolled32_pac_split_const_overhead = ((boom_data_unrolled32_pac_split_const - BOOM_DATA_UNRROLLED32_NOPAC) / BOOM_DATA_UNRROLLED32_NOPAC) * 100
-boom_data_unrolled32_pac_split_reload_overhead = ((boom_data_unrolled32_pac_split_reload - BOOM_DATA_UNRROLLED32_NOPAC) / BOOM_DATA_UNRROLLED32_NOPAC) * 100
-
-
-
-# =========================================================
-# BOOM LIPPEN/PRINCE RAW DATA
-# =========================================================
-# get it from loop_l.c
-#loop_l_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_LOOP_L_NOLIPPEN = 
-#loop_l.linux.riscv
-boom_loop_l_lippen = 
-boom_loop_l_lippen_overhead = ((boom_loop_l_lippen - BOOM_LOOP_L_NOLIPPEN) / BOOM_LOOP_L_NOLIPPEN) * 100
-
-# get it from loop_s.c
-#loop_s_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_LOOP_S_NOLIPPEN = 
-#loop_s.linux.riscv
-boom_loop_s_lippen = 
-boom_loop_s_lippen_overhead = ((boom_loop_s_lippen - BOOM_LOOP_S_NOLIPPEN) / BOOM_LOOP_S_NOLIPPEN) * 100
-
-# get it from loop_nested.c
-#loop_nested_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_LOOP_NESTED_NOLIPPEN = 
-#loop_nested.linux.riscv
-boom_loop_nested_lippen =
-boom_loop_nested_lippen_overhead = ((boom_loop_nested_lippen - BOOM_LOOP_NESTED_NOLIPPEN) / BOOM_LOOP_NESTED_NOLIPPEN) * 100
-
-# get it from deep_recursive_return.c
-#deep_recursive_return_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_DEEP_RECURSIVE_RETURN_NOLIPPEN =
-#deep_recursive_return.linux.riscv --> you should name it like that while you are generating it
-boom_deep_recursive_return_lippen = 
-boom_deep_recursive_return_lippen_overhead = ((boom_deep_recursive_return_lippen - BOOM_DEEP_RECURSIVE_RETURN_NOLIPPEN) / BOOM_DEEP_RECURSIVE_RETURN_NOLIPPEN) * 100
-
-# get it from deep_recursive_entry.c
-#deep_recursive_entry_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_DEEP_RECURSIVE_ENTRY_NOLIPPEN =
-#deep_recursive_entry.linux.riscv --> you should name it like that while you are generating it
-boom_deep_recursive_entry_lippen =
-boom_deep_recursive_entry_lippen_overhead = ((boom_deep_recursive_entry_lippen - BOOM_DEEP_RECURSIVE_ENTRY_NOLIPPEN) / BOOM_DEEP_RECURSIVE_ENTRY_NOLIPPEN) * 100
-
-# get it from data_loop.c
-# put the number you see in front of nopac=
-BOOM_DATA_LOOP_NOLIPPEN = 
-# put the number you see in front of pac=
-boom_data_loop_lippen_split = 
-# put the number you see in front of pac_ia=
-boom_data_loop_lippen_split_ia = 
-boom_data_loop_lippen_split_overhead = ((boom_data_loop_lippen_split - BOOM_DATA_LOOP_NOLIPPEN) / BOOM_DATA_LOOP_NOLIPPEN) * 100
-boom_data_loop_lippen_split_ia_overhead = ((boom_data_loop_lippen_split_ia - BOOM_DATA_LOOP_NOLIPPEN) / BOOM_DATA_LOOP_NOLIPPEN) * 100
-
-# get it from data_unrolled32.c
-# put the number you see in front of nopac=
-BOOM_DATA_UNRROLLED32_NOLIPPEN =
-# put the number you see in front of pac=
-boom_data_unrolled32_lippen_split = 
-# put the number you see in front of pac_ia=
-boom_data_unrolled32_lippen_split_const = 
-# put the number you see in front of pac_ia_reload=
-boom_data_unrolled32_lippen_split_reload = 
-boom_data_unrolled32_lippen_split_overhead = ((boom_data_unrolled32_lippen_split - BOOM_DATA_UNRROLLED32_NOLIPPEN) / BOOM_DATA_UNRROLLED32_NOLIPPEN) * 100
-boom_data_unrolled32_lippen_split_const_overhead = ((boom_data_unrolled32_lippen_split_const - BOOM_DATA_UNRROLLED32_NOLIPPEN) / BOOM_DATA_UNRROLLED32_NOLIPPEN) * 100
-boom_data_unrolled32_lippen_split_reload_overhead = ((boom_data_unrolled32_lippen_split_reload - BOOM_DATA_UNRROLLED32_NOLIPPEN) / BOOM_DATA_UNRROLLED32_NOLIPPEN) * 100
-
-
-
-# =========================================================
-# BOOM CONFIG1 (NO RAS) LIPPEN/PRINCE RAW DATA
-# =========================================================
-# get it from loop_l.c
-#loop_l_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom_LOOP_L_NOLIPPEN = 
-#loop_l.linux.riscv
-boom_custom_loop_l_lippen = 
-boom_custom_loop_l_lippen_overhead = ((boom_custom_loop_l_lippen - BOOM_custom_LOOP_L_NOLIPPEN) / BOOM_custom_LOOP_L_NOLIPPEN) * 100
-
-# get it from loop_s.c
-#loop_s_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom_LOOP_S_NOLIPPEN = 
-#loop_s.linux.riscv
-boom_custom_loop_s_lippen = 
-boom_custom_loop_s_lippen_overhead = ((boom_custom_loop_s_lippen - BOOM_custom_LOOP_S_NOLIPPEN) / BOOM_custom_LOOP_S_NOLIPPEN) * 100
-
-# get it from loop_nested.c
-#loop_nested_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom_LOOP_NESTED_NOLIPPEN = 
-#loop_nested.linux.riscv
-boom_custom_loop_nested_lippen =
-boom_custom_loop_nested_lippen_overhead = ((boom_custom_loop_nested_lippen - BOOM_custom_LOOP_NESTED_NOLIPPEN) / BOOM_custom_LOOP_NESTED_NOLIPPEN) * 100
-
-# get it from deep_recursive_return.c
-#deep_recursive_return_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom_DEEP_RECURSIVE_RETURN_NOLIPPEN =
-#deep_recursive_return.linux.riscv --> you should name it like that while you are generating it
-boom_custom_deep_recursive_return_lippen = 
-boom_custom_deep_recursive_return_lippen_overhead = ((boom_custom_deep_recursive_return_lippen - BOOM_custom_DEEP_RECURSIVE_RETURN_NOLIPPEN) / BOOM_custom_DEEP_RECURSIVE_RETURN_NOLIPPEN) * 100
-
-# get it from deep_recursive_entry.c
-#deep_recursive_entry_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom_DEEP_RECURSIVE_ENTRY_NOLIPPEN =
-#deep_recursive_entry.linux.riscv --> you should name it like that while you are generating it
-boom_custom_deep_recursive_entry_lippen =
-boom_custom_deep_recursive_entry_lippen_overhead = ((boom_custom_deep_recursive_entry_lippen - BOOM_custom_DEEP_RECURSIVE_ENTRY_NOLIPPEN) / BOOM_custom_DEEP_RECURSIVE_ENTRY_NOLIPPEN) * 100
-
-
-
-# =========================================================
-# BOOM CONFIG2 (NO RAS, NO BTB) LIPPEN/PRINCE RAW DATA
-# =========================================================
-# get it from loop_l.c
-#loop_l_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom2_LOOP_L_NOLIPPEN = 
-#loop_l.linux.riscv
-boom_custom2_loop_l_lippen = 
-boom_custom2_loop_l_lippen_overhead = ((boom_custom2_loop_l_lippen - BOOM_custom2_LOOP_L_NOLIPPEN) / BOOM_custom2_LOOP_L_NOLIPPEN) * 100
-
-# get it from loop_s.c
-#loop_s_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom2_LOOP_S_NOLIPPEN = 
-#loop_s.linux.riscv
-boom_custom2_loop_s_lippen = 
-boom_custom2_loop_s_lippen_overhead = ((boom_custom2_loop_s_lippen - BOOM_custom2_LOOP_S_NOLIPPEN) / BOOM_custom2_LOOP_S_NOLIPPEN) * 100
-
-# get it from loop_nested.c
-#loop_nested_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom2_LOOP_NESTED_NOLIPPEN = 
-#loop_nested.linux.riscv
-boom_custom2_loop_nested_lippen =
-boom_custom2_loop_nested_lippen_overhead = ((boom_custom2_loop_nested_lippen - BOOM_custom2_LOOP_NESTED_NOLIPPEN) / BOOM_custom2_LOOP_NESTED_NOLIPPEN) * 100
-
-# get it from deep_recursive_return.c
-#deep_recursive_return_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom2_DEEP_RECURSIVE_RETURN_NOLIPPEN =
-#deep_recursive_return.linux.riscv --> you should name it like that while you are generating it
-boom_custom2_deep_recursive_return_lippen = 
-boom_custom2_deep_recursive_return_lippen_overhead = ((boom_custom2_deep_recursive_return_lippen - BOOM_custom2_DEEP_RECURSIVE_RETURN_NOLIPPEN) / BOOM_custom2_DEEP_RECURSIVE_RETURN_NOLIPPEN) * 100
-
-# get it from deep_recursive_entry.c
-#deep_recursive_entry_nopac.linux.riscv --> you should name it like that while you are generating it
-BOOM_custom2_DEEP_RECURSIVE_ENTRY_NOLIPPEN =
-#deep_recursive_entry.linux.riscv --> you should name it like that while you are generating it
-boom_custom2_deep_recursive_entry_lippen =
-boom_custom2_deep_recursive_entry_lippen_overhead = ((boom_custom2_deep_recursive_entry_lippen - BOOM_custom2_DEEP_RECURSIVE_ENTRY_NOLIPPEN) / BOOM_custom2_DEEP_RECURSIVE_ENTRY_NOLIPPEN) * 100
-
-
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
-# =========================================================
+# 7. BOOM CONFIG2 (NO RAS, NO BTB) OVERHEADS
+bc2 = data["BOOM_CONFIG2_NO_RAS_NO_BTB"]
+boom_custom2_loop_l_lippen_overhead = get_ovh(bc2["loop_l_lippen"], bc2["LOOP_L_NOLIPPEN"])
+boom_custom2_loop_s_lippen_overhead = get_ovh(bc2["loop_s_lippen"], bc2["LOOP_S_NOLIPPEN"])
+boom_custom2_loop_nested_lippen_overhead = get_ovh(bc2["loop_nested_lippen"], bc2["LOOP_NESTED_NOLIPPEN"])
+boom_custom2_deep_recursive_return_lippen_overhead = get_ovh(bc2["deep_recursive_return_lippen"], bc2["DEEP_RECURSIVE_RETURN_NOLIPPEN"])
+boom_custom2_deep_recursive_entry_lippen_overhead = get_ovh(bc2["deep_recursive_entry_lippen"], bc2["DEEP_RECURSIVE_ENTRY_NOLIPPEN"])
 
 
 # =========================================================
